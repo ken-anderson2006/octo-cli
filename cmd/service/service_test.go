@@ -642,3 +642,92 @@ func TestParentCommand_RejectsUnknownSubcommand(t *testing.T) {
 		})
 	}
 }
+
+func rootWithBotService(t *testing.T, handler http.HandlerFunc) (*cobra.Command, *cmdutil.TestFactory, *httptest.Server) {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	tf := cmdutil.NewTestFactory()
+	cfg := &config.Config{
+		APIBaseURL: srv.URL,
+		BotToken:   "app_test",
+		Format:     "json",
+	}
+	tf.SetConfig(cfg)
+	cred := &credential.BotCredential{Token: "app_test", Source: "test"}
+	tf.SetCredential(cred)
+	cli := client.New(cfg, cred, client.Options{ErrOut: io.Discard})
+	tf.SetClient(cli)
+	// Wire the registry explicitly to the one from the binary so the test
+	// exercises the real specs.
+	tf.RegistryFunc = registry.MustNew
+
+	root := &cobra.Command{Use: "octo-cli", SilenceUsage: true, SilenceErrors: true}
+	RegisterServiceCommands(root, tf.Factory)
+
+	return root, tf, srv
+}
+
+
+func TestLoopWorkspaceCreateIsNotRegistered(t *testing.T) {
+	root, _, _ := rootWithBotService(t, func(http.ResponseWriter, *http.Request) {
+		t.Fatal("hidden workspace and runtime management commands must not send a request")
+	})
+	loop := findCmd(root, "loop")
+	if loop == nil {
+		t.Fatal("loop command not registered")
+	}
+	workspace := findCmd(loop, "workspace")
+	if workspace == nil {
+		t.Fatal("loop workspace command not registered")
+	}
+	runtime := findCmd(loop, "runtime")
+	if runtime == nil {
+		t.Fatal("loop runtime command not registered")
+	}
+	for _, words := range [][]string{
+		{"workspace", "create"}, {"workspace", "update"}, {"workspace", "delete"},
+		{"runtime", "update"}, {"runtime", "delete"}, {"runtime", "archive-and-delete"},
+		{"runtime", "update-request", "create"}, {"runtime", "model-request", "create"},
+		{"runtime", "local-skill-request", "create"}, {"runtime", "local-skill-import", "create"},
+	} {
+		cmd := loop
+		for _, w := range words {
+			if cmd = findCmd(cmd, w); cmd == nil {
+				break
+			}
+		}
+		if cmd != nil {
+			t.Errorf("loop %s must not be registered", strings.Join(words, " "))
+		}
+	}
+}
+
+func TestHTMLCreateGeneratesRunScopedIdempotencyKey(t *testing.T) {
+	var bodies []map[string]any
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"code":"TEMP","message":"retry"}`))
+	})
+	root.SetArgs([]string{"html", "publish", "--html", "new"})
+	err := root.Execute()
+	if len(bodies) != 1 {
+		t.Fatalf("request count = %d, want one delivery", len(bodies))
+	}
+	sent, _ := bodies[0]["idempotency_key"].(string)
+	if !strings.HasPrefix(sent, "octo-cli-") {
+		t.Fatalf("generated key = %q", sent)
+	}
+	ee := output.AsExitError(err)
+	if ee == nil || ee.Code != "RESULT_UNKNOWN" {
+		t.Fatalf("err = %v, want RESULT_UNKNOWN", err)
+	}
+	var detail map[string]any
+	if json.Unmarshal(ee.Detail, &detail) != nil || detail["idempotency_key"] != sent {
+		t.Errorf("detail = %s, want idempotency_key %q", ee.Detail, sent)
+	}
+}

@@ -1,0 +1,2006 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Octo HTML Docs API",
+    "version": "1.0.0",
+    "description": "Agent-facing surface for octo-doc — the self-hosted, prompt-native interactive HTML document service (distinct from the CRDT docs-backend behind the `docs` domain). Covers the document lifecycle (publish/list/get/versions/delete), author drafts, per-doc share codes, media assets, inline comments, and the agent element read/replace + reply paths. All paths are under the `/docs-html/v1` prefix. CLI success output uses the `{ok, identity, data, ...}` envelope; failures use `{ok:false, error:{...}}`."
+  },
+  "x-octo-service": "html",
+  "x-octo-base-url": "OCTO_API_BASE_URL",
+  "x-octo-space-header": false,
+  "x-octo-response-unwrap": "data",
+  "paths": {
+    "/docs-html/v1/docs": {
+      "get": {
+        "operationId": "html.list",
+        "summary": "List documents (owner-scoped index)",
+        "description": "Owner-scoped document index. The backend returns offset pagination metadata; generic cursor-based --page-all does not apply.",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "Page number; the backend defaults to 1 when omitted.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "description": "Items per page; the backend defaults to 20 when omitted and clamps values above 100.",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "x-octo-risk": "read",
+        "x-octo-response-unwrap": null,
+        "responses": {
+          "200": {
+            "description": "A list of documents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "slug": {
+                        "type": "string",
+                        "description": "Document reference: canonical doc_id for a new canonical document, or the legacy slug for an old document."
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "latest": {
+                        "type": "integer"
+                      },
+                      "updated": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "html.publish",
+        "summary": "Create an HTML document or publish a later version",
+        "description": "Create by omitting slug; the CLI generates a fresh idempotency_key unless one is supplied explicitly. Every new document receives a canonical doc_id whether mounted or unmounted; response data.slug is the document reference and equals data.doc_id. To publish a later version, first run html source <doc-ref> and retain data.html with data.version, edit that source, then pass the previously returned data.slug, set version to the source version plus one, and omit idempotency_key. On version_conflict or version_required, the bot must autonomously reread the latest source, reapply only the intended changes while preserving other edits, and republish to the same slug within the same task, up to three recovery attempts; do not end the task by forwarding a routine version error to the user. Never only increase version and resend stale HTML. Pass only a slug the server returned earlier: an unregistered slug does not create a canonical document, it produces a legacy unregistered one that never appears in the file list. Old legacy documents continue to use their legacy slug as that reference. A display name is metadata, not identity: publishing the same name without the saved reference creates a different document, so same-name republish is not supported. Do not infer identity mode from mount_type or from whether doc_id is non-empty. Requires the write token (Bearer). The server stamps commentable artifacts and reconciles existing comment anchors.",
+        "x-octo-risk": "write",
+        "x-octo-auto-idempotency-key": "idempotency_key",
+        "x-octo-body-variants-hint": "create without slug (the CLI generates a key when omitted), or republish an existing slug without idempotency_key",
+        "x-octo-body-variants": [
+          {
+            "name": "create",
+            "required": [
+              "html",
+              "idempotency_key"
+            ],
+            "forbidden": [
+              "slug"
+            ]
+          },
+          {
+            "name": "republish",
+            "required": [
+              "html",
+              "slug"
+            ],
+            "forbidden": [
+              "idempotency_key"
+            ]
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "html"
+                ],
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "description": "Legacy wire name for an existing document reference. Omit when creating. For every later publish pass the prior response data.slug: it is the canonical doc_id for a new document or the legacy slug for an old document. Never pass a display name as identity."
+                  },
+                  "html": {
+                    "type": "string",
+                    "description": "the full self-contained HTML document body"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "description": "Optional caller key for retrying this exact creation operation; otherwise the CLI generates a cryptographically random key once per invocation and reuses it for transport retries. Omit when republishing an existing slug."
+                  },
+                  "version": {
+                    "type": "integer",
+                    "description": "New output version: for updates send the source version read before editing plus one. On servers with octo-docs-html#34 deployed, the server requires current latest+1 for bot updates (428 version_required if missing/zero, 409 version_conflict if mismatched). The HTML backend will be deployed and verified on every serving instance before this CLI workflow is released. Omit for first publication. Do not increase this value without rereading and editing the latest source."
+                  },
+                  "meta": {
+                    "type": "object",
+                    "description": "optional metadata (e.g. {\"title\":\"...\"})",
+                    "properties": {
+                      "title": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "mount_type": {
+                    "type": "string",
+                    "enum": [
+                      "group",
+                      "space",
+                      "thread"
+                    ],
+                    "description": "Optional placement in docs-backend and the file sidebar; 'group', 'space', and 'thread' are supported. Mounting does not determine document identity."
+                  },
+                  "group_no": {
+                    "type": "string",
+                    "description": "group number; supply when mount_type=group"
+                  },
+                  "thread_id": {
+                    "type": "string",
+                    "description": "thread id; supply when mount_type=thread"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Publish result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "doc_id",
+                    "slug"
+                  ],
+                  "properties": {
+                    "doc_id": {
+                      "type": "string",
+                      "description": "Canonical document identifier for every newly created document. Read it at data.doc_id; do not use its presence to infer a mode."
+                    },
+                    "slug": {
+                      "type": "string",
+                      "description": "Document reference for all later operations. Read data.slug and persist it; for every newly created document it is equal to doc_id, while an old legacy document retains its legacy slug."
+                    },
+                    "version": {
+                      "type": "integer"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "share_url": {
+                      "type": "string",
+                      "description": "Share URL when supplied by the server."
+                    },
+                    "size": {
+                      "type": "integer"
+                    },
+                    "aids": {
+                      "type": "integer"
+                    },
+                    "merged_comments": {
+                      "type": "integer"
+                    },
+                    "registered": {
+                      "type": "boolean",
+                      "description": "Whether docs-backend registration is active; operational status only, not an identity-mode discriminator."
+                    },
+                    "status": {
+                      "type": "string",
+                      "description": "Server publish/registration status; operational status only, not a document-reference discriminator."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/draft": {
+      "post": {
+        "operationId": "html.draft.create",
+        "summary": "Create a canonical HTML draft",
+        "description": "Create a new draft without a document reference. The CLI generates a fresh idempotency_key unless one is supplied explicitly; the response data.slug is the canonical document reference for later draft save/promote and publish operations.",
+        "x-octo-risk": "write",
+        "x-octo-auto-idempotency-key": "idempotency_key",
+        "x-octo-body-variants-hint": "create a draft with non-empty html; the CLI generates idempotency_key when omitted; slug is not accepted on this endpoint",
+        "x-octo-body-variants": [
+          {
+            "name": "create",
+            "required": [
+              "html",
+              "idempotency_key"
+            ],
+            "forbidden": [
+              "slug"
+            ]
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "html"
+                ],
+                "properties": {
+                  "html": {
+                    "type": "string",
+                    "description": "Initial draft HTML body."
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "description": "Optional caller key for retrying the same creation operation; otherwise the CLI generates one per invocation."
+                  },
+                  "meta": {
+                    "type": "object",
+                    "description": "Optional document metadata such as display title.",
+                    "properties": {
+                      "title": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "mount_type": {
+                    "type": "string",
+                    "enum": [
+                      "group",
+                      "space",
+                      "thread"
+                    ],
+                    "description": "Optional placement; does not identify the document."
+                  },
+                  "group_no": {
+                    "type": "string",
+                    "description": "Group number when mount_type=group."
+                  },
+                  "thread_id": {
+                    "type": "string",
+                    "description": "Thread id when mount_type=thread."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Canonical draft created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "doc_id",
+                    "slug"
+                  ],
+                  "properties": {
+                    "doc_id": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string",
+                      "description": "Canonical document reference; equal to doc_id."
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/{doc_id}": {
+      "get": {
+        "operationId": "html.get",
+        "summary": "Fetch one document's metadata (needs reader)",
+        "description": "Return a single document's metadata (slug, title, latest version, timestamps). Backend endpoint GET /docs-html/v1/docs/{doc_id} — added to octo-doc to back this command.",
+        "x-octo-risk": "read",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Document metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "slug": {
+                      "type": "string",
+                      "description": "Document reference: canonical doc_id for a new document, or the retained legacy slug for an old document. The wire name remains slug for server compatibility."
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "latest": {
+                      "type": "integer"
+                    },
+                    "created": {
+                      "type": "string"
+                    },
+                    "updated": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "html.rm",
+        "summary": "Delete a document (forbidden for bots, including author/owner/admin)",
+        "description": "Bots must not invoke this operation, even for documents they authored, own, or administer. Ask a human with document admin permission to delete it in Octo; do not use docs.delete or raw API calls as a workaround. This command targets the HTML service, not the docs-backend bot deletion route, so enforcement must be verified for that service separately. If bot_delete_forbidden is returned, stop without retrying or changing identity/Space. Publishing and editing remain governed by their existing permissions.",
+        "x-octo-risk": "write",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/{doc_id}/versions": {
+      "get": {
+        "operationId": "html.versions",
+        "summary": "List a document's versions (needs reader)",
+        "x-octo-risk": "read",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Version list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "n": {
+                        "type": "integer"
+                      },
+                      "created": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/{doc_id}/draft": {
+      "put": {
+        "operationId": "html.draft.save",
+        "summary": "Save the author draft (author-only)",
+        "description": "Write the author-only draft slot for a document reference. Does not mint an immutable version until promoted.",
+        "x-octo-risk": "write",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "html"
+                ],
+                "properties": {
+                  "html": {
+                    "type": "string",
+                    "description": "the draft HTML body"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Draft saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/{doc_id}/draft/promote": {
+      "post": {
+        "operationId": "html.draft.promote",
+        "summary": "Promote the author draft to an immutable version (author-only)",
+        "x-octo-risk": "write",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Promoted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "slug": {
+                      "type": "string",
+                      "description": "Document reference: canonical doc_id for a new document, or the retained legacy slug for an old document. The wire name remains slug for server compatibility."
+                    },
+                    "version": {
+                      "type": "integer"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/{doc_id}/share": {
+      "post": {
+        "operationId": "html.share",
+        "summary": "Mint / rotate a per-doc read+comment share code (author-only)",
+        "x-octo-risk": "write",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Share code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "html.unshare",
+        "summary": "Revoke the per-doc share code (author-only)",
+        "x-octo-risk": "write",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/{doc_id}/grants": {
+      "get": {
+        "operationId": "html.grant.list",
+        "summary": "List a document's per-uid access grants (author-only)",
+        "description": "List the uids granted access to this document and their role. Author-only (only the doc creator can view grants).",
+        "x-octo-risk": "read",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Grant list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "uid": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "html.grant.add",
+        "summary": "Grant a uid access to a document (author-only)",
+        "description": "Grant a specific uid access to this document (upsert by uid). role defaults to 'reader' (read published versions + comment/react). Only the doc creator (author) can grant. The granted uid resolves to a reader capability on subsequent requests — no share code needed.",
+        "x-octo-risk": "write",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "uid"
+                ],
+                "properties": {
+                  "uid": {
+                    "type": "string",
+                    "description": "the uid to grant access to"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "reader",
+                      "commenter",
+                      "writer"
+                    ],
+                    "description": "capability to grant; defaults to 'reader' when omitted. Matches octo-docs-html AddGrant (internal/service/grants.go), whose own 400 text is \"role must be reader|commenter|writer\" — admin is refused there because admin identity comes from creator_uid, never the grants API"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Grant added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/{doc_id}/grants/{uid}": {
+      "delete": {
+        "operationId": "html.grant.rm",
+        "summary": "Revoke a uid's access grant (author-only)",
+        "description": "Revoke a uid's grant on this document. Author-only. The doc creator cannot be removed (they own the doc) — attempting to returns a conflict.",
+        "x-octo-risk": "write",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Grant revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/{doc_id}/assets": {
+      "get": {
+        "operationId": "html.asset.ls",
+        "summary": "List a document's media assets (needs reader)",
+        "x-octo-risk": "read",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Asset list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "sha256": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "size": {
+                        "type": "integer"
+                      },
+                      "mime": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "html.asset.add",
+        "summary": "Upload a media asset to a document (author-only)",
+        "description": "Upload a media asset for a document via multipart/form-data (form field \"file\"). The asset is content-addressed (sha256); requires the write token / doc author credential.",
+        "x-octo-risk": "write",
+        "x-octo-multipart": true,
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Asset registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sha256": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/{doc_id}/assets/{sha256}": {
+      "delete": {
+        "operationId": "html.asset.rm",
+        "summary": "Delete a media asset (author-only)",
+        "x-octo-risk": "write",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sha256",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/comments": {
+      "get": {
+        "operationId": "html.comment.list",
+        "summary": "List a document's comments (needs reader)",
+        "description": "List comments for a document. The slug is passed as a query parameter. The backend returns offset pagination metadata; generic cursor-based --page-all does not apply.",
+        "x-octo-risk": "read",
+        "x-octo-response-unwrap": null,
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "query",
+            "required": true,
+            "description": "Document reference: canonical doc_id for a new document, or the retained legacy slug for an old document. The wire name remains slug for server compatibility.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "version to fold to, or 'all'"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Comment list"
+          }
+        }
+      },
+      "post": {
+        "operationId": "html.comment.add",
+        "summary": "Create an anchored root comment or reply (requires commenter capability or higher)",
+        "description": "Create an optionally anchored root comment, or reply when parent_id names a thread root. Requires CapComment or higher (commenter, writer, admin, or owner); read-only share-code access is insufficient and lower-capability callers receive a hidden 404. Optional version accepts a non-negative JSON integer or decimal string, a v-prefixed decimal string, or the literal string latest.",
+        "x-octo-risk": "write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "slug",
+                  "text"
+                ],
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "description": "Document reference: canonical doc_id for a new document, or the retained legacy slug for an old document. The wire name remains slug for server compatibility."
+                  },
+                  "text": {
+                    "type": "string",
+                    "description": "comment body"
+                  },
+                  "parent_id": {
+                    "type": "string",
+                    "x-octo-flag": "parent-id",
+                    "description": "Optional comment thread root id; when supplied, creates a reply instead of a root comment."
+                  },
+                  "version": {
+                    "type": [
+                      "string",
+                      "integer"
+                    ],
+                    "x-octo-flag": "version",
+                    "description": "Optional selector for the version on which to stamp the comment: non-negative decimal value, decimal string, v-prefixed decimal string, or literal latest. The CLI flag accepts these as text; --data also accepts a JSON integer."
+                  },
+                  "anchor": {
+                    "type": "object",
+                    "description": "optional anchor (text or element by aid); omit for an unanchored comment"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Comment created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "html.comment.reanchor",
+        "summary": "Move a comment's anchor (own comment, or manage)",
+        "description": "Re-anchor a comment or reply (id in the JSON body) to new text or an element, recorded at the given version; this also resets the thread's applied status. Requires comment capability on the document (hidden 404 otherwise); the caller must be the comment's author unless it holds manage capability, else 403 not_author. Duplicate JSON keys are rejected. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin).",
+        "x-octo-risk": "write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "slug",
+                  "id",
+                  "anchor"
+                ],
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "description": "Document reference: canonical doc_id for a new document, or the retained legacy slug for an old document. The wire name remains slug for server compatibility."
+                  },
+                  "id": {
+                    "type": "string",
+                    "description": "Comment or reply id to re-anchor."
+                  },
+                  "anchor": {
+                    "type": "object",
+                    "description": "New anchor. kind is text, element or lost; text anchors use text/context_before/context_after, element anchors use aid/selector/label.",
+                    "properties": {
+                      "kind": {
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "context_before": {
+                        "type": "string"
+                      },
+                      "context_after": {
+                        "type": "string"
+                      },
+                      "aid": {
+                        "type": "string"
+                      },
+                      "selector": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "reason": {
+                        "type": "string"
+                      },
+                      "fingerprint": {
+                        "type": "object"
+                      },
+                      "fallback": {
+                        "type": "object"
+                      }
+                    }
+                  },
+                  "version": {
+                    "type": "string",
+                    "description": "Document version the mutation applies to: a positive integer (as text, optionally prefixed with v) or latest. Omitted or 0 means version 1; a version above the current latest is rejected."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated comment snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "html.comment.rm",
+        "summary": "Delete one comment, or wipe every comment with all=1",
+        "description": "With id: soft-delete one comment or reply; requires comment capability (hidden 404 otherwise) and the caller must be its author unless it holds edit capability (403 not_author). With all=1: permanently remove every comment on the document; requires manage capability (hidden 404 otherwise) and ignores id. Returns {ok:true} or {ok:true, deleted:n}. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin).",
+        "x-octo-risk": "high-risk-write",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "query",
+            "required": true,
+            "description": "Document reference: canonical doc_id for a new document, or the retained legacy slug for an old document. The wire name remains slug for server compatibility.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "query",
+            "description": "Comment or reply id to delete; required unless all=1.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "all",
+            "in": "query",
+            "description": "Exactly 1 wipes every comment on the document (manage capability); any other value is ignored.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "Version at which the deletion is recorded; omit for latest.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "deleted": {
+                      "type": "integer",
+                      "description": "Number of comments removed (all=1 only)."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/agent/replies": {
+      "post": {
+        "operationId": "html.reply",
+        "summary": "Post an agent reply + verdict to a comment (write-token gated)",
+        "description": "Reply to a comment thread as the agent (identity odoc-agent) with an optional verdict: applied / partial / question. Requires the write token.",
+        "x-octo-risk": "write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "slug",
+                  "parent_id",
+                  "text"
+                ],
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "description": "Document reference: canonical doc_id for a new document, or the retained legacy slug for an old document. The wire name remains slug for server compatibility."
+                  },
+                  "parent_id": {
+                    "type": "string",
+                    "description": "the comment thread root id being replied to"
+                  },
+                  "text": {
+                    "type": "string",
+                    "description": "reply body"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "applied",
+                      "partial",
+                      "question"
+                    ],
+                    "description": "optional verdict rendered on the parent"
+                  },
+                  "applied_in": {
+                    "type": "integer",
+                    "description": "Optional version association identifying where the agent's change was applied; distinct from the comment mutation version."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reply posted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/agent/element/get": {
+      "post": {
+        "operationId": "html.element.get",
+        "summary": "Read one artifact's outer HTML by aid (write-token gated)",
+        "description": "Return the outer HTML of a single artifact located by its stamped data-odoc-aid in a document version (version 0 = latest). Requires the write token.",
+        "x-octo-risk": "read",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "slug",
+                  "aid"
+                ],
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "description": "Document reference: canonical doc_id for a new document, or the retained legacy slug for an old document. The wire name remains slug for server compatibility."
+                  },
+                  "version": {
+                    "type": "integer",
+                    "description": "version to read; 0 or omitted = latest"
+                  },
+                  "aid": {
+                    "type": "string",
+                    "description": "the artifact's stamped data-odoc-aid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Element outer HTML",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "aid": {
+                      "type": "string"
+                    },
+                    "tag": {
+                      "type": "string"
+                    },
+                    "html": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/agent/element/replace": {
+      "post": {
+        "operationId": "html.element.replace",
+        "summary": "Replace one artifact's outer HTML by aid and republish (write-token gated)",
+        "description": "Swap one artifact's outer HTML (located by aid in base_version, 0 = latest) with new_html and republish a new version. new_html must be exactly one top-level element and free of scripts / inline event handlers / javascript: URLs. Requires the write token.",
+        "x-octo-risk": "write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "slug",
+                  "aid",
+                  "new_html"
+                ],
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "description": "Document reference: canonical doc_id for a new document, or the retained legacy slug for an old document. The wire name remains slug for server compatibility."
+                  },
+                  "base_version": {
+                    "type": "integer",
+                    "description": "version whose aid to locate; 0 or omitted = latest"
+                  },
+                  "aid": {
+                    "type": "string",
+                    "description": "the artifact's stamped data-odoc-aid"
+                  },
+                  "new_html": {
+                    "type": "string",
+                    "description": "replacement single top-level element"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Replaced + republished",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "slug": {
+                      "type": "string",
+                      "description": "Document reference: canonical doc_id for a new document, or the retained legacy slug for an old document. The wire name remains slug for server compatibility."
+                    },
+                    "version": {
+                      "type": "integer"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/{doc_id}/source": {
+      "get": {
+        "operationId": "html.source",
+        "summary": "Read stored HTML and its version together (needs reader)",
+        "description": "Read the latest published source by default, or select a fixed version. Returns slug, version and full stored HTML from the same read, without the viewer overlay. Retain data.html with data.version, edit that HTML, then publish with version set to the saved version plus one. On version_conflict, read again and reapply the edit; never only increase version and resend stale HTML. Requires octo-docs-html MR !34 to be deployed. Rollout is backend first: deploy and verify octo-docs-html#34 on every HTML-serving instance before releasing this CLI workflow. A route-level 404 while html get can read the same reference means the source endpoint is unavailable, not that the document is missing; stop and check deployment/routing. Do not infer the source version from metadata, create a replacement document, or fall back to versionless publishing.",
+        "x-octo-risk": "read",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "Positive published version to read; omit for latest.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stored source and its matching version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "slug",
+                    "version",
+                    "html"
+                  ],
+                  "properties": {
+                    "slug": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "html": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/{doc_id}/versions/{version}/source": {
+      "get": {
+        "operationId": "html.version.source",
+        "summary": "Download one version's stored HTML source as plain text (needs reader)",
+        "description": "Return the exact stored bytes of one published version as text/plain (served inert, never as an active page), with ETag and X-Document-Version response headers. Pass --output to save the bytes; use html source for the JSON {slug, version, html} form. Any capability above none on the document is enough, including a share-code reader; the document is hidden as 404 otherwise. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin).",
+        "x-octo-risk": "read",
+        "x-octo-binary-response": true,
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "description": "Positive published version number, or latest (case-insensitive) for the newest version.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stored version source as inert text",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/{doc_id}/versions/{version}/revert": {
+      "post": {
+        "operationId": "html.version.revert",
+        "summary": "Republish an earlier version as a new latest version (needs edit)",
+        "description": "Copy the stored bytes of the named version into a brand-new version (latest + 1); existing versions are never modified or deleted, so the change can be undone by reverting again. Readers see the restored content as the latest version and existing comment anchors are reconciled. Requires edit capability, re-checked under the document lock; callers below edit get a hidden 404. The version must be a positive integer (latest is refused) and any request body is ignored. The restored bytes must still satisfy today's size limit (413 html_too_large) and script policy. For a document that a user published, a bot is additionally refused (403 space_membership_required) unless the bot's owner is the document creator and the bot's Space equals the document's Space. Rate-limited together with publish. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin).",
+        "x-octo-risk": "write",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "description": "Positive published version number whose bytes are republished.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revert published as a new version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "slug",
+                    "version"
+                  ],
+                  "properties": {
+                    "slug": {
+                      "type": "string",
+                      "description": "Document reference."
+                    },
+                    "doc_id": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "integer",
+                      "description": "Newly minted version."
+                    },
+                    "new_version": {
+                      "type": "integer",
+                      "description": "Same as version: the newly minted version."
+                    },
+                    "base_version": {
+                      "type": "integer",
+                      "description": "The version whose bytes were restored."
+                    },
+                    "change_source": {
+                      "type": "string",
+                      "description": "Change source recorded for the new version (revert)."
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "share_url": {
+                      "type": "string"
+                    },
+                    "registered": {
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "type": "integer"
+                    },
+                    "aids": {
+                      "type": "integer"
+                    },
+                    "merged_comments": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/docs/{doc_id}/diff": {
+      "get": {
+        "operationId": "html.diff",
+        "summary": "Compare two published versions of a document (needs reader)",
+        "description": "Return an element-level and source-line diff between two published versions. Both from and to are required positive integers; any other query parameter is rejected. Large or complex documents fail with 413 diff_too_complex, and truncated is set when output limits were reached. Any capability above none is enough (hidden 404 otherwise). Rate-limited together with writes. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin).",
+        "x-octo-risk": "read",
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "description": "Base published version.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "description": "Target published version.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Version diff",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "integer"
+                    },
+                    "to": {
+                      "type": "integer"
+                    },
+                    "summary": {
+                      "type": "object",
+                      "properties": {
+                        "added": {
+                          "type": "integer"
+                        },
+                        "removed": {
+                          "type": "integer"
+                        },
+                        "modified": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "changes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "added",
+                              "removed",
+                              "modified"
+                            ]
+                          },
+                          "before_aid": {
+                            "type": "string"
+                          },
+                          "after_aid": {
+                            "type": "string"
+                          },
+                          "dom_path": {
+                            "type": "string"
+                          },
+                          "before_path": {
+                            "type": "string"
+                          },
+                          "after_path": {
+                            "type": "string"
+                          },
+                          "before_html": {
+                            "type": "string"
+                          },
+                          "after_html": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "code_hunks": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "old_start": {
+                            "type": "integer"
+                          },
+                          "old_lines": {
+                            "type": "integer"
+                          },
+                          "new_start": {
+                            "type": "integer"
+                          },
+                          "new_lines": {
+                            "type": "integer"
+                          },
+                          "lines": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/v1/reactions": {
+      "post": {
+        "operationId": "html.comment.react",
+        "summary": "Toggle an emoji reaction on a comment or reply (needs commenter)",
+        "description": "Toggle the caller's reaction: adds the emoji when the caller has not reacted with it yet, removes it otherwise. comment_id may name a root comment or a reply. Requires comment capability on the document (hidden 404 otherwise); a share-code reader cannot react. emoji must be 1-32 bytes. Duplicate JSON keys are rejected. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin).",
+        "x-octo-risk": "write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "slug",
+                  "comment_id",
+                  "emoji"
+                ],
+                "properties": {
+                  "slug": {
+                    "type": "string",
+                    "description": "Document reference: canonical doc_id for a new document, or the retained legacy slug for an old document. The wire name remains slug for server compatibility."
+                  },
+                  "comment_id": {
+                    "type": "string",
+                    "description": "Root comment or reply id."
+                  },
+                  "emoji": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32,
+                    "description": "Emoji to toggle (at most 32 bytes)."
+                  },
+                  "version": {
+                    "type": "string",
+                    "description": "Document version the mutation applies to: a positive integer (as text, optionally prefixed with v) or latest. Omitted or 0 means version 1; a version above the current latest is rejected."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reaction toggled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "reactions": {
+                      "type": "object",
+                      "description": "Emoji to list of reacting users for the target comment or reply.",
+                      "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/d/{doc_id}/draft": {
+      "get": {
+        "operationId": "html.page.draft",
+        "summary": "Render the draft as an HTML page (needs edit)",
+        "description": "Render the author draft slot as a full HTML page with the viewer overlay in draft mode. Requires edit capability; readers, commenters and documents without a draft get 404. Public page route under /docs-html/d (outside /v1); the CLI sends its Bearer credential, so no share-code cookie redirect occurs. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin). Pass --output to save the page.",
+        "x-octo-risk": "read",
+        "x-octo-binary-response": true,
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Draft page (text/html)",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "html.page.draft_head",
+        "summary": "Check the draft page without downloading it (needs edit)",
+        "description": "HEAD variant of html.page.draft: same authorization and status, headers only (Content-Type text/html). Render the author draft slot as a full HTML page with the viewer overlay in draft mode. Requires edit capability; readers, commenters and documents without a draft get 404. Public page route under /docs-html/d (outside /v1); the CLI sends its Bearer credential, so no share-code cookie redirect occurs. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin).",
+        "x-octo-risk": "read",
+        "x-octo-binary-response": true,
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Draft page exists and is visible (no body)"
+          }
+        }
+      }
+    },
+    "/docs-html/d/{doc_id}/v/{version}": {
+      "get": {
+        "operationId": "html.page.version",
+        "summary": "Render a published version as an HTML page (needs reader)",
+        "description": "Render a published version as a full HTML page with the viewer overlay; inline asset URLs are signed for the viewer. Requires read capability (share code, grant, member, creator or owner); otherwise 404. Public page route under /docs-html/d (outside /v1); the CLI sends its Bearer credential, so no share-code cookie redirect occurs. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin). Pass --output to save the page.",
+        "x-octo-risk": "read",
+        "x-octo-binary-response": true,
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "description": "Version number, or latest (case-insensitive) for the newest version. A non-numeric value other than latest returns 404.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rendered version page (text/html)",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "html.page.version_head",
+        "summary": "Check a rendered version page without downloading it (needs reader)",
+        "description": "HEAD variant of html.page.version: same authorization and status, headers only (Content-Type text/html). Render a published version as a full HTML page with the viewer overlay; inline asset URLs are signed for the viewer. Requires read capability (share code, grant, member, creator or owner); otherwise 404. Public page route under /docs-html/d (outside /v1); the CLI sends its Bearer credential, so no share-code cookie redirect occurs. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin).",
+        "x-octo-risk": "read",
+        "x-octo-binary-response": true,
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "description": "Version number, or latest (case-insensitive) for the newest version. A non-numeric value other than latest returns 404.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Version page exists and is visible (no body)"
+          }
+        }
+      }
+    },
+    "/docs-html/d/{doc_id}/v/{version}/export": {
+      "get": {
+        "operationId": "html.page.export",
+        "summary": "Download a self-contained export bundle of a version (needs reader)",
+        "description": "kind=export: sent as a Content-Disposition attachment unless download=0. Builds a standalone HTML file of the version with its comments embedded (backend route GET /d/{slug}/v/{version}/{kind}, where kind is export or fork only). Requires read capability; otherwise 404. Pass --output to save the file. Public page route under /docs-html/d (outside /v1); the CLI sends its Bearer credential, so no share-code cookie redirect occurs. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin).",
+        "x-octo-risk": "read",
+        "x-octo-binary-response": true,
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "description": "Version number, or latest (case-insensitive) for the newest version. A non-numeric value other than latest returns 404.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "description": "0 suppresses the attachment disposition; any other value or omitted keeps it.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Standalone HTML export (text/html)",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/d/{doc_id}/v/{version}/fork": {
+      "get": {
+        "operationId": "html.page.fork",
+        "summary": "Download a self-contained fork bundle of a version (needs reader)",
+        "description": "kind=fork: served inline unless download=1, which adds a Content-Disposition attachment. Builds a standalone HTML file of the version with its comments embedded (backend route GET /d/{slug}/v/{version}/{kind}, where kind is export or fork only). Requires read capability; otherwise 404. Pass --output to save the file. Public page route under /docs-html/d (outside /v1); the CLI sends its Bearer credential, so no share-code cookie redirect occurs. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin).",
+        "x-octo-risk": "read",
+        "x-octo-binary-response": true,
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "description": "Version number, or latest (case-insensitive) for the newest version. A non-numeric value other than latest returns 404.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "description": "1 adds the attachment disposition; any other value or omitted serves inline.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Standalone HTML fork (text/html)",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs-html/d/{doc_id}/assets/{sha256}": {
+      "get": {
+        "operationId": "html.asset.get",
+        "summary": "Download a document media asset (needs reader or signed URL)",
+        "description": "Serve the raw bytes of a document media asset with its stored MIME type (from the upload allowlist, by default common image, audio/video and PDF types) under a locked-down CSP; Range requests are supported. Requires read capability on the document (404 otherwise). The backend also accepts a short-lived signed URL (sig/exp query) minted into rendered pages for browser loads; the CLI does not send it and relies on the Bearer credential. Public page route under /docs-html/d (outside /v1); the CLI sends its Bearer credential, so no share-code cookie redirect occurs. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin). Pass --output to save the bytes.",
+        "x-octo-risk": "read",
+        "x-octo-binary-response": true,
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sha256",
+            "in": "path",
+            "required": true,
+            "description": "Asset content address: 64 lowercase hex characters (from html asset ls).",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Asset bytes; Content-Type is the asset's stored MIME type.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "html.asset.head",
+        "summary": "Check a document media asset without downloading it (needs reader or signed URL)",
+        "description": "HEAD variant of html.asset.get: same authorization, headers only (Content-Type, Content-Length, Accept-Ranges). Serve the raw bytes of a document media asset with its stored MIME type (from the upload allowlist, by default common image, audio/video and PDF types) under a locked-down CSP; Range requests are supported. Requires read capability on the document (404 otherwise). The backend also accepts a short-lived signed URL (sig/exp query) minted into rendered pages for browser loads; the CLI does not send it and relies on the Bearer credential. Public page route under /docs-html/d (outside /v1); the CLI sends its Bearer credential, so no share-code cookie redirect occurs. Bot bearer tokens are honored only when the octo-docs-html deployment sets BOT_AUTH_ENABLED=true (default false) and OCTO_SERVER_BASE_URL is configured; otherwise a bot token is not recognized and the call fails like an unauthenticated one. A bot's capability on the document comes from the bot itself (document creator or member) or from its owner (owner is the creator or a document admin).",
+        "x-octo-risk": "read",
+        "x-octo-binary-response": true,
+        "parameters": [
+          {
+            "name": "doc_id",
+            "in": "path",
+            "required": true,
+            "description": "Document reference returned as data.slug: canonical doc_id for a new document, or the retained legacy slug for an old document.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sha256",
+            "in": "path",
+            "required": true,
+            "description": "Asset content address: 64 lowercase hex characters (from html asset ls).",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Asset exists and is readable (no body)"
+          }
+        }
+      }
+    }
+  }
+}

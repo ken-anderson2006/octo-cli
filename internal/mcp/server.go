@@ -1,296 +1,594 @@
-// Package mcp serves Octo CLI tools over stdio and Streamable HTTP.
 package mcp
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"io/fs"
-	"slices"
+	"os"
 	"strings"
-	"unicode/utf8"
+	"sync"
 
-	"github.com/Mininglamp-OSS/octo-cli/skills"
+	"github.com/Mininglamp-OSS/octo-cli/internal/cmdutil"
+	"github.com/Mininglamp-OSS/octo-cli/internal/credential"
+	"github.com/Mininglamp-OSS/octo-cli/internal/output"
+	"github.com/Mininglamp-OSS/octo-cli/internal/registry"
 )
+
+// defaultProtocolVersion is the single MCP protocol version this server
+// implements and reports on initialize (it does not echo an arbitrary
+// client-supplied version).
+const defaultProtocolVersion = "2025-06-18"
 
 const (
-	protocolVersion = "2025-11-25"
-	maxFrameSize    = 8 << 20
-	maxActiveCalls  = 8
+	serverName    = "octo-cli"
+	serverVersion = "0.1.0-mcp"
 )
 
-type request struct {
-	ID     json.RawMessage
-	Method string
-	Params json.RawMessage
-	key    string
-}
+// facadeMode selects which tool surface a connection exposes. The three-tool
+// facade (search_ops / describe_op / call_op) is the default and PR #177
+// behaviour; the two-tool facade (get_skill / execute) is opt-in; both exposes
+// the full set for controlled side-by-side comparison.
+type facadeMode string
 
-type response struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id"`
-	Result  any             `json:"result,omitempty"`
-	Error   *responseError  `json:"error,omitempty"`
-}
+const (
+	facadeThree facadeMode = "three"
+	facadeTwo   facadeMode = "two"
+	facadeBoth  facadeMode = "both"
+)
 
-type responseError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-func result(id json.RawMessage, value any) *response {
-	return &response{JSONRPC: "2.0", ID: id, Result: value}
-}
-
-func failure(id json.RawMessage, code int, message string) *response {
-	return &response{JSONRPC: "2.0", ID: id, Error: &responseError{Code: code, Message: message}}
-}
-
-type session struct {
-	fsys         fs.FS
-	buildVersion string
-	protocol     string
-	execute      func(context.Context, []string) ExecResult
-	active       map[string]*activeCall
-	completed    chan completedCall
-}
-
-type inputFrame struct {
-	line string
-	err  error
-}
-
-// Serve exchanges newline-delimited MCP messages. Closing the input cancels
-// outstanding calls. The caller owns the streams and must close a blocked input
-// reader if it cancels the session while keeping the process alive.
-func Serve(ctx context.Context, in io.Reader, out io.Writer, version string, execute func(context.Context, []string) ExecResult) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	frames := make(chan inputFrame)
-	go readFrames(ctx, in, frames)
-	encoder := json.NewEncoder(out)
-	s := session{
-		fsys:         skills.FS,
-		buildVersion: version,
-		execute:      execute,
-		active:       make(map[string]*activeCall),
-		completed:    make(chan completedCall),
+// ParseFacade validates a facade selector, defaulting empty to three-tool.
+func ParseFacade(s string) (facadeMode, bool) {
+	switch s {
+	case "", "three":
+		return facadeThree, true
+	case "two":
+		return facadeTwo, true
+	case "both":
+		return facadeBoth, true
+	default:
+		return facadeThree, false
 	}
-	for {
-		var reply *response
-		select {
-		case <-ctx.Done():
-			return nil
-		case frame, ok := <-frames:
-			if !ok {
-				return nil
+}
+
+// Server handles MCP JSON-RPC requests for one connection. search_ops and
+// describe_op read the registry directly; call_op drives the generated cobra
+// tree via build. trusted carries the connection-scoped over-privilege-
+// protection values; credentialToken, when set (HTTP), pins call_op to that
+// bearer instead of the process env (stdio). baseGlobals carries the operator's
+// parsed serve-time globals (credential selector + limits) into each call.
+type Server struct {
+	secretDownloads *SecretDownloads
+	reg             *registry.Registry
+	mapping         *Mapping
+	build           RootBuilder
+
+	trusted          TrustedContext
+	credentialToken  string                                     // "" → resolve from env (stdio) unless httpMode
+	httpMode         bool                                       // HTTP connection: never inherit the server env credential
+	uploadRoot       string                                     // OCTO_MCP_UPLOAD_ROOT; confines multipart file_path (both transports)
+	allowLocalUpload bool                                       // operator --allow-local-upload: unconfined stdio upload pass-through
+	uploadOpener     func(string, execPolicy) (*os.File, error) // optional internal upload-boundary observer
+	baseGlobals      cmdutil.GlobalOptions                      // operator serve-time globals (BotID/Profile/Timeout/NoRetry/DryRun)
+
+	protocolVersion string
+	clientResources bool
+
+	// facade selects the exposed tool surface ("" == three-tool default).
+	facade facadeMode
+
+	// factoryFn builds the per-call factory; nil means makeFactory. Tests set it
+	// to point call_op at a fake backend.
+	factoryFn func(TrustedContext) (*cmdutil.Factory, *bytes.Buffer, *bytes.Buffer)
+
+	mu sync.Mutex // serialize call_op assembly per connection
+}
+
+// NewServer builds a connection server. It fails if the embedded skill
+// navigation mapping is invalid (fail-fast).
+func NewServer(build RootBuilder) (*Server, error) {
+	reg, err := registry.New()
+	if err != nil {
+		return nil, err
+	}
+	mapping, err := BuildMapping(reg)
+	if err != nil {
+		return nil, err
+	}
+	return &Server{
+		reg:             reg,
+		mapping:         mapping,
+		build:           build,
+		protocolVersion: defaultProtocolVersion,
+	}, nil
+}
+
+// WithTrustedContext pins the connection's forced values.
+func (s *Server) WithTrustedContext(tc TrustedContext) *Server { s.trusted = tc; return s }
+
+// WithBaseGlobals carries the operator's parsed serve-time globals (credential
+// selector + limits) into each call_op.
+func (s *Server) WithBaseGlobals(g cmdutil.GlobalOptions) *Server { s.baseGlobals = g; return s } //nolint:gocritic // copy serve-time globals for connection isolation
+
+// WithUploadPolicy sets the multipart file_path confinement for this connection:
+// root is OCTO_MCP_UPLOAD_ROOT (confine when set); allowLocal is the operator
+// --allow-local-upload opt-in (unconfined stdio pass-through, ignored on HTTP).
+func (s *Server) WithUploadPolicy(root string, allowLocal bool) *Server {
+	s.uploadRoot = root
+	s.allowLocalUpload = allowLocal
+	return s
+}
+
+// WithFacade selects the exposed tool surface for this connection.
+func (s *Server) WithFacade(f facadeMode) *Server { s.facade = f; return s }
+
+// toolList returns the tools/list surface for the active facade.
+func (s *Server) toolList() []toolDef {
+	var tools []toolDef
+	switch s.facade {
+	case facadeTwo:
+		tools = twoToolDefinitions()
+	case facadeBoth:
+		tools = append(toolDefinitions(), twoToolDefinitions()...)
+	default:
+		tools = toolDefinitions()
+	}
+	return append(tools, secretToolDefinition())
+}
+
+// WithSecretDownloads sets the shared publication and retrieval service.
+func (s *Server) WithSecretDownloads(d *SecretDownloads) *Server { s.secretDownloads = d; return s }
+
+// toolEnabled reports whether a tool name is callable under the active facade,
+// so a tool from the other facade is a clean "unknown tool" rather than a
+// silent cross-facade call.
+func (s *Server) toolEnabled(name string) bool {
+	if name == "get_secret_download_url" {
+		return true
+	}
+	three := name == "search_ops" || name == "describe_op" || name == "call_op"
+	two := name == "get_skill" || name == "execute"
+	switch s.facade {
+	case facadeTwo:
+		return two
+	case facadeBoth:
+		return three || two
+	default:
+		return three
+	}
+}
+
+// Facade-aware recovery hints. Under --facade two the three meta-tools are NOT
+// exposed, so an error/degradation hint must never tell a caller to invoke the
+// disabled search_ops / describe_op; it routes to get_skill with the right
+// intent instead. Under three/both the wording is unchanged (no regression).
+func (s *Server) discoveryToolName() string {
+	if s.facade == facadeTwo {
+		return "get_skill"
+	}
+	return "search_ops"
+}
+
+func (s *Server) hintDiscover() string {
+	if s.facade == facadeTwo {
+		return "call get_skill with intent=search to discover operation ids"
+	}
+	return "call search_ops to discover operation ids"
+}
+
+func (s *Server) hintDescribe() string {
+	if s.facade == facadeTwo {
+		return "call get_skill with intent=describe to see the operation's declared arguments"
+	}
+	return "call describe_op to see the operation's declared arguments"
+}
+
+func (s *Server) hintModuleMap() string {
+	if s.facade == facadeTwo {
+		return "call get_skill with intent=search and no domain/query for the module map"
+	}
+	return "call search_ops with no arguments for the module map"
+}
+
+// resourceDegradeHint is the no-resources-support fallback, worded per facade so
+// a --facade two caller is pointed at get_skill describe, not describe_op.
+func (s *Server) resourceDegradeHint(skillName string) string {
+	proceed := "proceed with describe_op alone"
+	if s.facade == facadeTwo {
+		proceed = "proceed with get_skill intent=describe alone"
+	}
+	return "client has no MCP resources support; run `octo-cli skills " + skillName + "` if a shell is available, or " + proceed
+}
+
+// makeFactory builds a fresh factory with buffered IO for one call_op, applying
+// the connection credential and the operator globals. A fresh factory per call
+// keeps credentials and cached clients isolated between connections. The
+// globals set here are re-applied after build() by executeOperation (build
+// resets the fresh root's persistent flags).
+//
+// HTTP connections fail closed: the credential is pinned to the connection's
+// bearer, and a missing/malformed bearer yields a CredentialFunc that returns
+// an auth error — an HTTP call can NEVER inherit the server process env /
+// auth-store credential. Only stdio (the local/trusted transport) resolves from
+// the environment. reg is shared read-only with the connection so a call_op
+// does not re-parse ~600 KB of embedded specs.
+func (s *Server) makeFactory(tc TrustedContext) (*cmdutil.Factory, *bytes.Buffer, *bytes.Buffer) { //nolint:gocritic // factory callback signature is shared with test overrides
+	streams, _, outBuf, errBuf := cmdutil.NewTestIOStreams()
+	f := cmdutil.NewDefaultFactory()
+	f.IOStreams = streams
+	reg := s.reg
+	f.RegistryFunc = func() *registry.Registry { return reg }
+	// Operator-set routing/limit/safety globals; re-applied post-build by executeOperation.
+	f.Globals.BotID = s.baseGlobals.BotID
+	f.Globals.Profile = s.baseGlobals.Profile
+	f.Globals.Timeout = s.baseGlobals.Timeout
+	f.Globals.NoRetry = s.baseGlobals.NoRetry
+	f.Globals.DryRun = s.baseGlobals.DryRun
+	f.Globals.Space = tc.SpaceID
+	if s.httpMode {
+		tok := s.credentialToken
+		space := tc.SpaceID
+		f.CredentialFunc = func() (*credential.BotCredential, error) {
+			if strings.TrimSpace(tok) == "" {
+				return nil, output.ErrAuth(
+					"missing or malformed Authorization bearer on the MCP HTTP connection",
+					"send Authorization: Bearer <token>; the HTTP transport never inherits the server's own credential")
 			}
-			if frame.err != nil {
-				return fmt.Errorf("read MCP input: %w", frame.err)
-			}
-			reply = s.handle(ctx, frame.line)
-		case done := <-s.completed:
-			reply = s.finishCall(done)
+			return &credential.BotCredential{
+				Token:   tok,
+				SpaceID: space,
+				BotKind: credential.TokenKind(tok),
+				Source:  "mcp:connection",
+			}, nil
 		}
-		if reply != nil {
-			if err := encoder.Encode(reply); err != nil {
-				return fmt.Errorf("write MCP response: %w", err)
-			}
-		}
+	}
+	return f, outBuf, errBuf
+}
+
+// Dispatch handles one JSON-RPC message and returns the response plus whether
+// there is one. A JSON-RPC notification (no id) NEVER receives a response, for
+// any method, so the id check comes first.
+func (s *Server) Dispatch(ctx context.Context, req rpcRequest) (rpcResponse, bool) { //nolint:gocritic // request snapshot is immutable during dispatch
+	if req.isNotification() {
+		return rpcResponse{}, false
+	}
+	if req.Jsonrpc != jsonrpcVersion && req.Jsonrpc != "" {
+		return newErrorResponse(req.ID, codeInvalidRequest, "unsupported jsonrpc version"), true
+	}
+	switch req.Method {
+	case "initialize":
+		return newResultResponse(req.ID, s.handleInitialize(req.Params)), true
+	case "ping":
+		return newResultResponse(req.ID, map[string]any{}), true
+	case "tools/list":
+		return newResultResponse(req.ID, map[string]any{"tools": s.toolList()}), true
+	case "tools/call":
+		return s.handleToolCall(ctx, req), true
+	case "resources/list":
+		return newResultResponse(req.ID, s.listResources()), true
+	case "resources/read":
+		return s.handleResourceRead(req), true
+	default:
+		return newErrorResponse(req.ID, codeMethodNotFound, "unknown method: "+req.Method), true
 	}
 }
 
-func readFrames(ctx context.Context, in io.Reader, frames chan<- inputFrame) {
-	defer close(frames)
-	scanner := bufio.NewScanner(in)
-	scanner.Buffer(make([]byte, 4096), maxFrameSize)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		select {
-		case frames <- inputFrame{line: line}:
-		case <-ctx.Done():
-			return
-		}
+func (s *Server) handleInitialize(params json.RawMessage) map[string]any {
+	var p struct {
+		ProtocolVersion string `json:"protocolVersion"`
+		Capabilities    struct {
+			Resources json.RawMessage `json:"resources"`
+		} `json:"capabilities"`
 	}
-	if err := scanner.Err(); err != nil {
-		select {
-		case frames <- inputFrame{err: err}:
-		case <-ctx.Done():
-		}
+	if len(params) > 0 {
+		_ = json.Unmarshal(params, &p) //nolint:errcheck // optional initialize metadata is best-effort
+	}
+	// Pin the negotiated version to what this server implements rather than
+	// echoing an arbitrary client string: the server supports exactly this
+	// protocol version, and an incompatible client fails loudly at the method
+	// layer instead of negotiating a version nobody implements.
+	s.protocolVersion = defaultProtocolVersion
+	s.clientResources = len(p.Capabilities.Resources) > 0
+	return map[string]any{
+		"protocolVersion": s.protocolVersion,
+		"capabilities": map[string]any{
+			"tools":     map[string]any{},
+			"resources": map[string]any{},
+		},
+		"serverInfo": map[string]any{"name": serverName, "version": serverVersion},
 	}
 }
 
-func (s *session) handle(ctx context.Context, line string) *response {
-	msg, reply := parseRequest([]byte(line))
-	if reply != nil {
-		return reply
+type toolCallParams struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+func (s *Server) handleToolCall(ctx context.Context, req rpcRequest) rpcResponse { //nolint:gocritic,gocyclo // request snapshot is immutable during dispatch; one branch per tool
+	var p toolCallParams
+	if err := decodeToolCallParams(req.Params, &p); err != nil {
+		return newErrorResponse(req.ID, codeInvalidParams, "invalid tools/call params: "+err.Error())
 	}
-	if msg.ID == nil {
-		s.notify(msg)
+	if !s.toolEnabled(p.Name) {
+		return newErrorResponse(req.ID, codeInvalidParams, "unknown tool: "+p.Name)
+	}
+	// An arguments value that is present but not a JSON object is an invalid
+	// shape: return -32602 rather than silently degrading to empty args.
+	if len(p.Arguments) > 0 && !isJSONObject(p.Arguments) {
+		return newErrorResponse(req.ID, codeInvalidParams, "tool arguments must be a JSON object")
+	}
+	switch p.Name {
+	case "get_secret_download_url":
+		return newResultResponse(req.ID, s.secretDownloadTool(ctx, p.Arguments))
+	case "search_ops":
+		var a struct {
+			Domain string `json:"domain"`
+			Query  string `json:"query"`
+		}
+		if err := unmarshalArgs(p.Arguments, &a); err != nil {
+			return newErrorResponse(req.ID, codeInvalidParams, "invalid search_ops arguments: "+err.Error())
+		}
+		return newResultResponse(req.ID, s.searchOps(ctx, a.Domain, a.Query))
+	case "describe_op":
+		var a struct {
+			OperationID string `json:"operation_id"`
+		}
+		if err := unmarshalArgs(p.Arguments, &a); err != nil {
+			return newErrorResponse(req.ID, codeInvalidParams, "invalid describe_op arguments: "+err.Error())
+		}
+		if a.OperationID == "" {
+			return newResultResponse(req.ID, jsonToolResult(missingArg("operation_id"), true))
+		}
+		return newResultResponse(req.ID, s.describeOp(a.OperationID))
+	case "call_op":
+		if err := validateClosedKeys(p.Arguments, callOpArgumentNames); err != nil {
+			return newErrorResponse(req.ID, codeInvalidParams, "invalid call_op arguments: "+err.Error())
+		}
+		var a struct {
+			OperationID string          `json:"operation_id"`
+			Arguments   json.RawMessage `json:"arguments"`
+		}
+		if err := unmarshalArgs(p.Arguments, &a); err != nil {
+			return newErrorResponse(req.ID, codeInvalidParams, "invalid call_op arguments: "+err.Error())
+		}
+		if a.OperationID == "" {
+			return newResultResponse(req.ID, jsonToolResult(missingArg("operation_id"), true))
+		}
+		if len(a.Arguments) > 0 && !isJSONObject(a.Arguments) {
+			return newErrorResponse(req.ID, codeInvalidParams, "call_op arguments must be a JSON object")
+		}
+		args, err := decodeArgs(a.Arguments)
+		if err != nil {
+			return newErrorResponse(req.ID, codeInvalidParams, "call_op arguments must be a JSON object: "+err.Error())
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return newResultResponse(req.ID, s.callOp(ctx, a.OperationID, args))
+	case "get_skill":
+		if err := validateClosedKeys(p.Arguments, getSkillArgumentNames); err != nil {
+			return newErrorResponse(req.ID, codeInvalidParams, "invalid get_skill arguments: "+err.Error())
+		}
+		var a struct {
+			Intent      string `json:"intent"`
+			Domain      string `json:"domain"`
+			Query       string `json:"query"`
+			OperationID string `json:"operation_id"`
+			Depth       string `json:"depth"`
+		}
+		if err := unmarshalArgs(p.Arguments, &a); err != nil {
+			return newErrorResponse(req.ID, codeInvalidParams, "invalid get_skill arguments: "+err.Error())
+		}
+		return newResultResponse(req.ID, s.getSkill(ctx, a.Intent, a.Domain, a.Query, a.OperationID, a.Depth))
+	case "execute":
+		if err := validateExecuteKeys(p.Arguments); err != nil {
+			return newErrorResponse(req.ID, codeInvalidParams, "invalid execute arguments: "+err.Error())
+		}
+		var a struct {
+			OperationID       string          `json:"operation_id"`
+			Arguments         json.RawMessage `json:"arguments"`
+			DryRun            bool            `json:"dry_run"`
+			SchemaFingerprint string          `json:"schema_fingerprint"`
+		}
+		if err := unmarshalArgs(p.Arguments, &a); err != nil {
+			return newErrorResponse(req.ID, codeInvalidParams, "invalid execute arguments: "+err.Error())
+		}
+		if a.OperationID == "" {
+			return newResultResponse(req.ID, jsonToolResult(map[string]any{
+				"status": "validation_error",
+				"error":  map[string]any{"type": "validation", "code": "VALIDATION_ERROR", "message": "missing required argument operation_id"},
+			}, true))
+		}
+		if len(a.Arguments) > 0 && !isJSONObject(a.Arguments) {
+			return newErrorResponse(req.ID, codeInvalidParams, "execute arguments must be a JSON object")
+		}
+		args, err := decodeArgs(a.Arguments)
+		if err != nil {
+			return newResultResponse(req.ID, jsonToolResult(map[string]any{
+				"status": "validation_error",
+				"error":  map[string]any{"type": "validation", "code": "INVALID_ARGUMENTS", "message": err.Error()},
+			}, true))
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return newResultResponse(req.ID, s.execute(ctx, a.OperationID, args, a.DryRun, a.SchemaFingerprint))
+	default:
+		return newErrorResponse(req.ID, codeInvalidParams, "unknown tool: "+p.Name)
+	}
+}
+
+// validateToolCallKeys checks the tools/call params object before struct
+// decoding can drop or merge keys. Only name, arguments and _meta are accepted,
+// with their exact spelling and at most once each, so a misplaced safety field
+// such as params.dry_run, or a second arguments object, is refused instead of
+// being silently discarded while the call runs live.
+func decodeToolCallParams(raw json.RawMessage, p *toolCallParams) error {
+	if len(raw) == 0 {
 		return nil
 	}
-	return s.request(ctx, msg)
-}
-
-func parseRequest(frame []byte) (msg *request, reply *response) {
-	if !utf8.Valid(frame) || !json.Valid(frame) {
-		return nil, failure(nil, -32700, "Parse error")
+	if !isJSONObject(raw) {
+		return json.Unmarshal(raw, p)
 	}
-	fields, ok := decodeObject(frame, "jsonrpc", "id", "method", "params")
-	var protocol, method string
-	if !ok || json.Unmarshal(fields["jsonrpc"], &protocol) != nil || protocol != "2.0" ||
-		json.Unmarshal(fields["method"], &method) != nil || method == "" {
-		return nil, failure(nil, -32600, "Invalid request")
-	}
-	decoded := request{ID: fields["id"], Method: method, Params: fields["params"]}
-	if decoded.ID == nil {
-		return &decoded, nil
-	}
-	key, ok := requestKey(decoded.ID)
-	if !ok {
-		return nil, failure(nil, -32600, "Request ID must be a string or integer")
-	}
-	if len(decoded.Params) != 0 && decoded.Params[0] != '{' {
-		return nil, failure(decoded.ID, -32602, "Parameters must be an object")
-	}
-	decoded.key = key
-	return &decoded, nil
-}
-
-// decodeObject keeps field names case-sensitive and rejects duplicates before
-// dispatch. Values remain raw so each method can validate its own schema.
-func decodeObject(raw []byte, allowed ...string) (map[string]json.RawMessage, bool) {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	if !consumeJSONToken(decoder, json.Delim('{')) {
-		return nil, false
-	}
-	fields := make(map[string]json.RawMessage, len(allowed))
-	for decoder.More() {
-		token, err := decoder.Token()
-		name, isString := token.(string)
-		if err != nil || !isString || !slices.Contains(allowed, name) || fields[name] != nil {
-			return nil, false
+	seen := map[string]bool{}
+	return visitObjectMembers(raw, func(key string, value json.RawMessage) error {
+		if key != "name" && key != "arguments" && key != "_meta" {
+			return fmt.Errorf("unknown field %q; tool inputs belong inside arguments", truncateRunes(key, 200))
 		}
-		var value json.RawMessage
-		if decoder.Decode(&value) != nil {
-			return nil, false
+		if seen[key] {
+			return fmt.Errorf("duplicate field %q", key)
 		}
-		fields[name] = value
-	}
-	if !consumeJSONToken(decoder, json.Delim('}')) {
-		return nil, false
-	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		return nil, false
-	}
-	return fields, true
-}
-
-func consumeJSONToken(decoder *json.Decoder, want json.Token) bool {
-	token, err := decoder.Token()
-	return err == nil && token == want
-}
-
-// requestKey keeps string and integer IDs distinct without rounding integers.
-// Equivalent JSON spellings of string IDs select the same pending call.
-func requestKey(id json.RawMessage) (string, bool) {
-	if len(id) == 0 {
-		return "", false
-	}
-	if id[0] == '"' {
-		var value string
-		if json.Unmarshal(id, &value) != nil {
-			return "", false
+		seen[key] = true
+		switch key {
+		case "name":
+			return json.Unmarshal(value, &p.Name)
+		case "arguments":
+			p.Arguments = value
 		}
-		return "s:" + value, true
-	}
-	if (id[0] == '-' || id[0] >= '0' && id[0] <= '9') && !bytes.ContainsAny(id, ".eE") {
-		if string(id) == "-0" {
-			return "n:0", true
-		}
-		return "n:" + string(id), true
-	}
-	return "", false
-}
-
-func (s *session) request(ctx context.Context, msg *request) *response {
-	switch msg.Method {
-	case "initialize":
-		if s.protocol != "" {
-			return failure(msg.ID, -32600, "Session already initialized")
-		}
-		var reply *response
-		s.protocol, reply = initialize(msg, s.buildVersion, true)
-		return reply
-	case "ping":
-		return result(msg.ID, struct{}{})
-	}
-	if s.protocol == "" {
-		return failure(msg.ID, -32000, "Initialize the MCP session first")
-	}
-	switch msg.Method {
-	case "tools/list":
-		return result(msg.ID, listTools(s.protocol))
-	case "tools/call":
-		return s.startCall(ctx, msg)
-	default:
-		return failure(msg.ID, -32601, "Method not found")
-	}
-}
-
-func initialize(msg *request, buildVersion string, allowLegacy bool) (version string, reply *response) {
-	var params struct {
-		ProtocolVersion string `json:"protocolVersion"`
-	}
-	if json.Unmarshal(msg.Params, &params) != nil || params.ProtocolVersion == "" {
-		return "", failure(msg.ID, -32602, "A protocol version is required")
-	}
-	version = params.ProtocolVersion
-	if !supportsProtocol(version, allowLegacy) {
-		version = protocolVersion
-	}
-	return version, result(msg.ID, map[string]any{
-		"protocolVersion": version,
-		"serverInfo":      map[string]string{"name": "octo-cli", "version": buildVersion},
-		"capabilities":    map[string]any{"tools": struct{}{}},
+		return nil
 	})
 }
 
-func supportsProtocol(version string, allowLegacy bool) bool {
-	switch version {
-	case "2024-11-05":
-		return allowLegacy
-	case "2025-03-26", "2025-06-18", protocolVersion:
-		return true
-	default:
-		return false
+// getSkillArgumentNames is get_skill's closed argument set; a misspelled
+// depth or operation_id must not silently fall back to its default.
+var getSkillArgumentNames = map[string]bool{"intent": true, "domain": true, "query": true, "operation_id": true, "depth": true}
+
+// callOpArgumentNames is call_op's closed argument set. call_op has no dry_run
+// or schema_fingerprint switch, so such a key next to operation_id must be
+// refused rather than dropped while the operation is sent live.
+var callOpArgumentNames = map[string]bool{"operation_id": true, "arguments": true}
+
+// validateClosedKeys refuses an unknown, mis-cased or repeated key in a tool's
+// arguments object before struct decoding would ignore or merge it.
+func validateClosedKeys(raw json.RawMessage, allowed map[string]bool) error {
+	if len(raw) == 0 || !isJSONObject(raw) {
+		return nil
 	}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	if _, err := d.Token(); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for d.More() {
+		token, err := d.Token()
+		if err != nil {
+			return err
+		}
+		key, _ := token.(string)
+		if !allowed[key] {
+			return fmt.Errorf("unknown argument %q", truncateRunes(key, 200))
+		}
+		if seen[key] {
+			return fmt.Errorf("duplicate argument %q", key)
+		}
+		seen[key] = true
+		var value json.RawMessage
+		if err := d.Decode(&value); err != nil {
+			return err
+		}
+	}
+	_, err := d.Token()
+	return err
 }
 
-func (s *session) notify(msg *request) {
-	if msg.Method != "notifications/cancelled" {
-		return
+// validateExecuteKeys keeps safety switches fail-closed. Struct unmarshalling
+// alone ignores unknown keys, accepts case-insensitive names, and maps null to
+// scalar zero values. Duplicate keys can also overwrite an earlier dry-run.
+// Only this tool's outer object is strict; operation arguments remain governed
+// by the shared registry/schema validator.
+func validateExecuteKeys(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
 	}
-	var params struct {
-		RequestID json.RawMessage `json:"requestId"`
+	d := json.NewDecoder(bytes.NewReader(raw))
+	if _, err := d.Token(); err != nil {
+		return err
 	}
-	if json.Unmarshal(msg.Params, &params) != nil {
-		return
+	seen := map[string]bool{}
+	for d.More() {
+		token, err := d.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := token.(string)
+		if !ok {
+			return fmt.Errorf("expected an argument name")
+		}
+		switch key {
+		case "operation_id", "arguments", "dry_run", "schema_fingerprint":
+		default:
+			return fmt.Errorf("unknown argument %q", truncateRunes(key, 200))
+		}
+		if seen[key] {
+			return fmt.Errorf("duplicate argument %q", truncateRunes(key, 200))
+		}
+		seen[key] = true
+		var value json.RawMessage
+		if err := d.Decode(&value); err != nil {
+			return err
+		}
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("argument %q must not be null", key)
+		}
 	}
-	key, ok := requestKey(params.RequestID)
-	if !ok {
-		return
+	_, err := d.Token()
+	return err
+}
+
+// unmarshalArgs decodes the tool arguments object, treating an empty/omitted
+// value as an empty object rather than an error.
+func unmarshalArgs(raw json.RawMessage, v any) error {
+	if len(raw) == 0 {
+		return nil
 	}
-	if call := s.active[key]; call != nil {
-		call.cancelled = true
-		call.cancel()
+	return json.Unmarshal(raw, v)
+}
+
+// isJSONObject reports whether raw is a JSON object (first non-space byte '{').
+func isJSONObject(raw json.RawMessage) bool {
+	for _, b := range raw {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		}
+		return b == '{'
 	}
+	return false
+}
+
+func (s *Server) handleResourceRead(req rpcRequest) rpcResponse { //nolint:gocritic // request snapshot is immutable during dispatch
+	var a struct {
+		URI string `json:"uri"`
+	}
+	if err := json.Unmarshal(req.Params, &a); err != nil {
+		return newErrorResponse(req.ID, codeInvalidParams, "invalid resources/read params: "+err.Error())
+	}
+	res, err := s.readResource(a.URI)
+	if err != nil {
+		return newErrorResponse(req.ID, codeInvalidParams, err.Error())
+	}
+	return newResultResponse(req.ID, res)
+}
+
+// decodeArgs decodes the call_op arguments object with UseNumber so a uint64 id
+// keeps its exact decimal text rather than rounding through float64.
+func decodeArgs(raw json.RawMessage) (map[string]any, error) {
+	if len(raw) == 0 {
+		return map[string]any{}, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var out map[string]any
+	if err := dec.Decode(&out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = map[string]any{}
+	}
+	return out, nil
+}
+
+func missingArg(name string) map[string]any {
+	return map[string]any{"ok": false, "error": map[string]any{
+		"type": "validation", "code": "VALIDATION_ERROR",
+		"message": "missing required argument " + name,
+	}}
 }

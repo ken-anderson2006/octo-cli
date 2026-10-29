@@ -67,3 +67,7 @@ octo-cli completion fish   > ~/.config/fish/completions/octo-cli.fish
 ```
 
 Version metadata is injected via `-ldflags` at release time (see `cmd/build.go`).
+
+## Bot API MCP catalog
+
+The hand-written drive leaves (`cmd/drive*.go`) are the exception to "everything is generated": `upload file` / `download file` / `share download` are multi-request transfers, `share create` branches on node type, and `share blob-create` / `share access` / `share download` take an argument shape (positional body field, whole share URL) the engine cannot express. They replace the generated leaf of the same name where one exists, so the spec still documents the endpoint for `octo-cli schema`. The MCP server's per-call factory sets `GeneratedDriveShareLeaves`, so MCP executes the generated `share blob-create|access|download` leaves whose shape matches the schema it publishes.

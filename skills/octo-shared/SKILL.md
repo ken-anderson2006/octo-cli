@@ -24,3 +24,14 @@ gateway. `--params` accepts a JSON object and `--data` accepts inline JSON,
 
 Success uses stdout and defaults to a JSON envelope. Errors use stderr and
 a nonzero exit status. Use `--jq` to select fields from the success envelope.
+
+## Stored-secret download links over MCP
+
+For a stored alias or ID, use `get_secret_download_url` and follow
+[the private client-file workflow](secret-download.md). Download directly to
+an exclusive private file; never fetch it as text, open/read/cat it into model
+context, or echo it from scripts. The temporary URL is sensitive too. This
+feature requires private shared Redis and an explicitly routed public HTTPS
+MCP download service, including for stdio publishers. Rotation does not revoke
+issued snapshots. The linked reference covers configuration, bounds, retention
+and client-history limits.

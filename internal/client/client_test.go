@@ -267,8 +267,10 @@ func TestDo_AmbiguousGatewayFailureReturnsResultUnknown(t *testing.T) {
 		})
 	}
 
-	t.Run("rate limit remains definitive", func(t *testing.T) {
+	t.Run("rate limit preserves unknown mutation outcome", func(t *testing.T) {
+		var calls atomic.Int32
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
 			w.WriteHeader(http.StatusTooManyRequests)
 			_, _ = w.Write([]byte(`{"error":{"code":"RATE_LIMITED","message":"slow down"}}`))
 		}))
@@ -282,8 +284,11 @@ func TestDo_AmbiguousGatewayFailureReturnsResultUnknown(t *testing.T) {
 			UnknownOutcomeOnNetworkFailure: true,
 		})
 		got := output.AsExitError(err)
-		if got == nil || got.Code == "RESULT_UNKNOWN" {
-			t.Fatalf("error = %#v, want definitive rate-limit error", got)
+		if got == nil || got.Code != "RESULT_UNKNOWN" || got.HTTPStatus != http.StatusTooManyRequests || !got.OutcomeUnknown() || calls.Load() != 1 {
+			t.Fatalf("error = %#v calls=%d, want unknown outcome after one delivery", got, calls.Load())
+		}
+		if !strings.Contains(string(got.Detail), "RATE_LIMITED") || !strings.Contains(got.Message, "slow down") || !strings.Contains(got.Hint, "do not retry automatically") {
+			t.Errorf("backend diagnostic or recovery lost: %+v", got)
 		}
 	})
 }
@@ -544,9 +549,10 @@ func TestDo_ResponseSecretTransportErrorFailsClosedBeforeRetryLog(t *testing.T) 
 	signedLocation := "https://objects.example.test/object?" + marker + "&signature=%zz"
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // make the retry loop exit immediately after its first diagnostic
+	defer cancel()
 
 	var diagnostics bytes.Buffer
+	var transportCalls int
 	c := New(
 		&config.Config{APIBaseURL: "https://api.example.test"},
 		nil,
@@ -554,6 +560,8 @@ func TestDo_ResponseSecretTransportErrorFailsClosedBeforeRetryLog(t *testing.T) 
 	)
 	c.httpClient = &http.Client{
 		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			transportCalls++
+			cancel() // exit backoff after exercising the transport error diagnostic
 			return nil, &url.Error{
 				Op:  "Get",
 				URL: signedLocation,
@@ -562,13 +570,18 @@ func TestDo_ResponseSecretTransportErrorFailsClosedBeforeRetryLog(t *testing.T) 
 		}),
 	}
 
+	// GET, because a POST is not resent after a transport failure, so its retry
+	// diagnostics would never be printed.
 	_, err := c.Do(ctx, &Request{
-		Method:               http.MethodPost,
-		Path:                 "/v1/artifacts/42/prepare",
+		Method:               http.MethodGet,
+		Path:                 "/v1/user/drive/files/42/upload/parts-presign",
 		ResponseSecretFields: []string{"parts[].url"},
 	})
 	if err == nil {
 		t.Fatal("expected the transport error to fail")
+	}
+	if transportCalls != 1 {
+		t.Fatalf("transport calls=%d, want one", transportCalls)
 	}
 	if strings.Contains(err.Error(), marker) {
 		t.Fatalf("response secret reached the returned error: %v", err)

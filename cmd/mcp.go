@@ -1,12 +1,14 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
-	"regexp"
-	"strings"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -14,167 +16,226 @@ import (
 	"github.com/Mininglamp-OSS/octo-cli/internal/cmdutil"
 	"github.com/Mininglamp-OSS/octo-cli/internal/mcp"
 	"github.com/Mininglamp-OSS/octo-cli/internal/output"
-	"github.com/Mininglamp-OSS/octo-cli/internal/registry"
 )
 
+// newMCPCmd wires `octo-cli mcp serve`: octo-cli as an MCP server exposing the
+// three meta-tools (search_ops / describe_op / call_op) over stdio (default) or
+// HTTP (JSON-RPC over POST). It is credential-free to start (delayed validation, design
+// §9 item 6) — call_op resolves the credential lazily — so the annotation opts
+// the subtree out of the root auth gate while each call still authenticates.
 func newMCPCmd(f *cmdutil.Factory) *cobra.Command {
-	group := &cobra.Command{
+	cmd := &cobra.Command{
 		Use:         "mcp",
-		Short:       "Manage the Octo CLI MCP server",
-		Args:        cobra.NoArgs,
+		Short:       "Run octo-cli as an MCP (Model Context Protocol) server",
 		Annotations: map[string]string{"skipValidation": "true"},
-		RunE:        func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+		RunE:        rejectMCPBareParent,
 	}
-	var listen string
-	var httpOptions mcp.HTTPOptions
+	cmd.AddCommand(newMCPServeCmd(f))
+	return cmd
+}
+
+func rejectMCPBareParent(cmd *cobra.Command, _ []string) error { return cmd.Help() }
+
+func newMCPServeCmd(f *cmdutil.Factory) *cobra.Command {
+	var (
+		httpAddr         string
+		forceChannelID   string
+		forceChannelType string
+		forceOnBehalfOf  string
+		allowLocalUpload bool
+		facade           string
+	)
 	serve := &cobra.Command{
 		Use:   "serve",
-		Short: "Serve Octo CLI MCP tools over stdio or Streamable HTTP",
-		Args:  cobra.NoArgs,
-		Annotations: map[string]string{
-			"skipValidation":      "true",
-			"skipOutputPreflight": "true",
-		},
+		Short: "Serve the MCP protocol over stdio (default) or HTTP (JSON-RPC over POST)",
+		Long: `Serve octo-cli as an MCP server.
+
+  octo-cli mcp serve                     # stdio (local / trusted-client transport)
+  octo-cli mcp serve --http :8080        # HTTP: JSON-RPC over POST (production transport)
+
+The existing facade meta-tools are search_ops, describe_op, call_op by default. The
+--facade flag selects the tool surface: "three" (default), "two" (the
+Skill-driven get_skill + execute facade), or "both" (the five existing meta-tools, for controlled
+side-by-side comparison). Either way the full operation set is discovered
+dynamically rather than expanded into hundreds of resident MCP tools, so a
+client's tools/list stays small. Each facade additionally exposes one dedicated
+get_secret_download_url tool (4 / 3 / 6 tools total). It requires private shared
+Redis and an explicit client-reachable public HTTPS origin; see the shipped
+octo-shared/secret-download.md. Stdio publishes to the same Redis as that
+HTTP MCP download service, without a local listener. Missing/invalid feature
+configuration fails closed for this tool; existing tools remain available.
+
+The HTTP transport is JSON-RPC request/response over POST (one request, one
+response); it does not yet serve an SSE stream or a server-managed session.
+
+Deployment (HTTP):
+  - No TLS is provided. --http binds every interface unless you give a loopback
+    host (e.g. --http 127.0.0.1:8080). Terminate TLS at a reverse proxy and/or
+    bind loopback; the bearer is a long-lived bot token sent per request.
+  - Trusted context comes only from operator --force-* / --space values or
+    OCTO_FORCE_* / OCTO_SPACE_ID. Requests containing X-Space-Id,
+    X-Octo-Channel-Id, X-Octo-Channel-Type or X-Octo-On-Behalf-Of are refused
+    with HTTP 403, even when empty or matching operator values. There is no
+    trusted-proxy header mode; configure a fixed server context instead.
+  - OCTO_MCP_ALLOWED_ORIGINS (comma-separated) permits browser origins; unset,
+    only loopback origins are accepted (anti DNS-rebinding). Setting it replaces
+    the loopback default, so list your loopback origin too if you still use it.
+    This is an origin gate, not browser CORS support; OPTIONS preflight is not
+    implemented. Use a non-browser client or a proxy that implements CORS.
+  - initialize / tools/list / search_ops / describe_op / resources/read need no
+    bearer, so any peer that can reach the port can enumerate the catalog.
+
+Multipart file_path uploads (file.upload, html.asset.add, attachment.upload)
+are default-deny on BOTH transports so a model cannot read an arbitrary local
+file: set OCTO_MCP_UPLOAD_ROOT to confine uploads to one directory (path is
+opened relative to directory handles, rejecting symlinks and non-regular files),
+or, on stdio only, pass
+--allow-local-upload to allow unconfined uploads on a trusted-local host. HTTP
+never allows unconfined uploads.
+
+Over-privilege protection: for stdio the forced space / channel / on-behalf-of
+values come from --space / --force-* flags (or OCTO_SPACE_ID / OCTO_FORCE_*
+env); HTTP uses the same operator config and a separate Authorization bearer
+per request. Unconfigured business target arguments remain caller-supplied
+inputs subject to backend authorization; they do not become trusted context.
+
+--dry-run turns the whole server into a rehearsal: every call_op prints the
+request it would send (method, url, masked headers, body) as a "dry_run": true
+envelope and performs no backend mutation for the server's lifetime.`,
+		Args:        cobra.NoArgs,
+		Annotations: map[string]string{"skipValidation": "true"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			defaults, reg := *f.Globals, f.Registry()
-			execute := func(ctx context.Context, bearer string, args []string) mcp.ExecResult {
-				return runMCPCommand(ctx, &defaults, reg, bearer, args)
+			fac, ok := mcp.ParseFacade(facade)
+			if !ok {
+				return output.ErrValidation(fmt.Sprintf("invalid --facade %q", facade), "choose one of: three, two, both")
 			}
-			if cmd.Flags().Changed("listen") {
-				return serveMCPHTTP(cmd.Context(), f, listen, httpOptions, execute)
+			// Validate the operator's --timeout once at startup so a malformed
+			// value fails loudly here rather than emitting a diagnostic into
+			// every call_op's stderr.
+			if t := f.Globals.Timeout; t != "" {
+				if _, err := time.ParseDuration(t); err != nil {
+					return fmt.Errorf("invalid --timeout %q: %w", t, err)
+				}
 			}
-			if cmd.Flags().Changed("drain-delay") || cmd.Flags().Changed("shutdown-timeout") {
-				return output.ErrValidation("HTTP drain options require --listen", "set an HTTP listener address")
+			tc := mcp.TrustedContext{
+				SpaceID:     firstNonEmpty(f.Globals.Space, os.Getenv("OCTO_SPACE_ID")),
+				ChannelID:   firstNonEmpty(forceChannelID, os.Getenv("OCTO_FORCE_CHANNEL_ID")),
+				ChannelType: firstNonEmpty(forceChannelType, os.Getenv("OCTO_FORCE_CHANNEL_TYPE")),
+				OnBehalfOf:  firstNonEmpty(forceOnBehalfOf, os.Getenv("OCTO_FORCE_ON_BEHALF_OF")),
 			}
-			return mcp.Serve(cmd.Context(), f.IOStreams.In, f.IOStreams.Out, Version,
-				func(ctx context.Context, args []string) mcp.ExecResult { return execute(ctx, "", args) })
+			// Carry the operator's credential-selector, limit, and dry-run globals
+			// into each call so --profile / --bot-id / --timeout / --no-retry /
+			// --dry-run are honored rather than silently dropped by the per-call
+			// factory. --dry-run makes every served call a rehearsal.
+			base := cmdutil.GlobalOptions{
+				BotID:   f.Globals.BotID,
+				Profile: f.Globals.Profile,
+				Timeout: f.Globals.Timeout,
+				NoRetry: f.Globals.NoRetry,
+				DryRun:  f.Globals.DryRun,
+			}
+			build := NewRootCmd
+
+			if httpAddr != "" {
+				return serveHTTP(cmd.Context(), httpAddr, build, tc, base, f.IOStreams.ErrOut, facade)
+			}
+			srv, err := mcp.NewServer(build)
+			if err != nil {
+				return err
+			}
+			var downloads *mcp.SecretDownloads
+			if !base.DryRun {
+				downloads = mcp.SecretDownloadsFromEnv()
+			}
+			defer downloads.Close()
+			srv.WithSecretDownloads(downloads).WithFacade(fac).WithTrustedContext(tc).WithBaseGlobals(base).
+				WithUploadPolicy(os.Getenv("OCTO_MCP_UPLOAD_ROOT"), allowLocalUpload)
+			return srv.ServeStdio(cmd.Context(), f.IOStreams.In, f.IOStreams.Out)
 		},
 	}
-	serve.Flags().StringVar(&listen, "listen", "", "serve MCP at /mcp and public skills at /v1/skills on host:port (for example 127.0.0.1:8765)")
-	serve.Flags().DurationVar(&httpOptions.DrainDelay, "drain-delay", 0, "wait after readiness fails before closing the HTTP listener")
-	serve.Flags().DurationVar(&httpOptions.ShutdownTimeout, "shutdown-timeout", mcp.DefaultHTTPShutdownTimeout, "maximum time to drain accepted HTTP requests")
-	group.AddCommand(serve)
-	return group
+	serve.Flags().StringVar(&httpAddr, "http", "", "serve HTTP (JSON-RPC over POST) on this address (e.g. :8080); default transport is stdio")
+	serve.Flags().StringVar(&forceChannelID, "force-channel-id", "", "force this channel_id on session-bound message ops (stdio + HTTP)")
+	serve.Flags().StringVar(&forceChannelType, "force-channel-type", "", "force this channel_type on session-bound message ops (stdio + HTTP)")
+	serve.Flags().StringVar(&forceOnBehalfOf, "force-on-behalf-of", "", "force this on_behalf_of identity (stdio + HTTP)")
+	serve.Flags().BoolVar(&allowLocalUpload, "allow-local-upload", false, "stdio only: allow unconfined multipart file_path uploads (trusted-local hosts); default-deny unless OCTO_MCP_UPLOAD_ROOT is set")
+	serve.Flags().StringVar(&facade, "facade", "three", "tool surface: three (default), two (get_skill + execute), or both")
+	return serve
 }
 
-func serveMCPHTTP(ctx context.Context, f *cmdutil.Factory, address string, options mcp.HTTPOptions, execute func(context.Context, string, []string) mcp.ExecResult) error {
-	if strings.TrimSpace(address) == "" {
-		return output.ErrValidation("--listen requires an address", "pass host:port, for example 127.0.0.1:8765")
-	}
-	if options.DrainDelay < 0 || options.ShutdownTimeout <= 0 {
-		return output.ErrValidation("invalid HTTP drain options", "pass a non-negative --drain-delay and a positive --shutdown-timeout")
-	}
-	var listenerConfig net.ListenConfig
-	listener, err := listenerConfig.Listen(ctx, "tcp", address)
+// serveHTTP runs the HTTP (JSON-RPC over POST) server until the context is cancelled or a
+// termination signal arrives, then shuts down gracefully so no request is
+// dropped mid-flight. Read/Idle timeouts bound a slow or idle client;
+// WriteTimeout is left unset because a legitimate --page-all response can be
+// long, and per-call bounding is the operator's --timeout instead.
+func serveHTTP(ctx context.Context, addr string, build mcp.RootBuilder, tc mcp.TrustedContext, base cmdutil.GlobalOptions, warn io.Writer, facade string) error { //nolint:gocritic // capture operator globals by value for connection isolation
+	fac, _ := mcp.ParseFacade(facade)
+	h, err := mcp.NewHTTPHandler(build, tc, base, fac)
 	if err != nil {
-		return fmt.Errorf("listen for MCP HTTP: %w", err)
-	}
-	_, _ = fmt.Fprintf(f.IOStreams.ErrOut, "Octo CLI MCP listening on http://%s/mcp\n", listener.Addr()) //nolint:errcheck // best-effort startup diagnostic
-	return mcp.ServeHTTP(ctx, listener, Version, options, execute)
-}
-
-func runMCPCommand(ctx context.Context, defaults *cmdutil.GlobalOptions, reg *registry.Registry, bearer string, args []string) mcp.ExecResult {
-	f := cmdutil.NewRequestFactory(ctx, bearer)
-	var stdout, stderr bytes.Buffer
-	f.IOStreams = &cmdutil.IOStreams{In: strings.NewReader(""), Out: &stdout, ErrOut: &stderr}
-	*f.Globals = *defaults
-	f.RegistryFunc = func() *registry.Registry { return reg }
-
-	mode := mcpStdioMode
-	if bearer != "" {
-		mode = mcpHTTPMode
-	}
-	root := newRootCmd(f, mode)
-	root.SetArgs(args)
-	root.SetIn(f.IOStreams.In)
-	root.SetOut(&stdout)
-	root.SetErr(&stderr)
-	code := f.ExitCode(root.ExecuteContext(ctx))
-	return mcp.ExecResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: code}
-}
-
-func validateMCPCommand(cmd *cobra.Command, args []string, mode commandMode) error {
-	if cmd.Hidden || cmd.DisableFlagParsing {
-		return output.ErrValidation("MCP calls require a public command", "use schema --list or --help to discover commands")
-	}
-	if cmd.Name() == "help" && cmd.Parent() == cmd.Root() {
-		target, remainder, err := cmd.Root().Find(args)
-		if err != nil || target == nil || target.Hidden || len(remainder) != 0 {
-			return output.ErrValidation("unknown help topic", "pass the name of a public command or command group")
-		}
-	}
-	if err := validateMCPFlags(cmd); err != nil {
 		return err
 	}
-	if mode == mcpHTTPMode {
-		return validateMCPHTTPFlags(cmd)
+	defer h.Close()
+	if !isLoopbackAddr(addr) {
+		fmt.Fprintf(warn, "warning: MCP HTTP server binding %q is not loopback and serves cleartext; terminate TLS at a proxy and/or bind 127.0.0.1\n", addr) //nolint:errcheck // best-effort stderr warning
 	}
-	return nil
-}
+	srv := newMCPHTTPServer(addr, h)
 
-// validateMCPFlags checks the parsed values before any command reads or writes
-// a local file. Cobra resolves aliases, flag shorthands, and repeated flags.
-func validateMCPFlags(cmd *cobra.Command) error {
-	flags := cmd.Flags()
-	installsSkills := cmd.Parent() == cmd.Root() && cmd.Name() == "skills" && flags.Changed("install")
-	if flags.Changed("file") || flags.Changed("output") || installsSkills {
-		return output.ErrValidation("local file operations are unavailable in MCP calls", "run the command directly with octo-cli")
-	}
-	if data := flags.Lookup("data"); data != nil && data.Changed && strings.HasPrefix(data.Value.String(), "@") {
-		return output.ErrValidation("MCP calls require inline request data", "pass inline JSON to --data")
-	}
-	return nil
-}
+	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-const (
-	maxMCPPageLimit = 100
-	maxMCPJQLength  = 1024
-)
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
 
-func validateMCPHTTPFlags(cmd *cobra.Command) error {
-	flags := cmd.Flags()
-	if timeout := flags.Lookup("timeout"); timeout != nil && timeout.Changed {
-		if duration, err := time.ParseDuration(timeout.Value.String()); err != nil || duration <= 0 {
-			return output.ErrValidation("--timeout must be a positive duration", "pass a Go duration such as 10s")
+	select {
+	case <-sigCtx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	case err := <-errCh:
+		if err == http.ErrServerClosed {
+			return nil
 		}
+		return err
 	}
-	if jq := flags.Lookup("jq"); jq != nil && jq.Changed && !validMCPQuery(jq.Value.String()) {
-		return output.ErrValidation("HTTP MCP --jq accepts a field or array index path", "use a path such as .data.items[0].id or filter stdout in the client")
-	}
-	if flags.Changed("page-limit") {
-		return validateMCPPagination(cmd)
-	}
-	return nil
 }
 
-func validateMCPPagination(cmd *cobra.Command) error {
-	flags := cmd.Flags()
-	all, err := flags.GetBool("page-all")
-	if err != nil || !all {
-		return output.ErrValidation("--page-limit requires --page-all", "enable --page-all or omit --page-limit")
+// newMCPHTTPServer builds the MCP HTTP server with the connection timeouts that
+// bound a slow or idle client. WriteTimeout is intentionally left unset because
+// a legitimate --page-all response can be long; per-call bounding is the
+// operator's --timeout instead.
+func newMCPHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
-	limit, err := flags.GetInt("page-limit")
-	if err != nil || limit < 1 || limit > maxMCPPageLimit {
-		return output.ErrValidation(
-			fmt.Sprintf("--page-limit must be between 1 and %d", maxMCPPageLimit),
-			"use the returned cursor to request additional pages")
-	}
-	return nil
 }
 
-// A selector performs a single lookup per field or index. Bound the expression
-// before handing it to the shared jq compiler.
-func validMCPQuery(expr string) bool {
-	if len(expr) > maxMCPJQLength {
+// isLoopbackAddr reports whether a listen address binds only the loopback
+// interface. A bare ":port" or a non-loopback host is treated as public.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" {
 		return false
 	}
-	expr = strings.TrimSpace(expr)
-	if expr == "" || expr == "." {
+	if host == "localhost" {
 		return true
 	}
-	const key = `[A-Za-z_][A-Za-z0-9_]*`
-	const index = `\[-?[0-9]{1,10}\]`
-	const path = `^\.(` + key + `|` + index + `)(\.` + key + `|` + index + `)*$`
-	valid, err := regexp.MatchString(path, expr)
-	return err == nil && valid
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

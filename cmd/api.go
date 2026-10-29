@@ -136,7 +136,7 @@ func applyAPIOperationMetadata(req *client.Request, op *registry.OperationDetail
 	req.UnknownOutcomeOnNetworkFailure = req.DisableRetry
 	req.ResponseSecretFields = op.ResponseSecretFields
 	if req.Body != nil && op.RequestBody != nil {
-		found, err := service.CollectBodySecrets(op.RequestBody, req.Body)
+		found, err := service.CollectRequestSecrets(op, req.Body)
 		if err != nil {
 			return output.ErrValidation(fmt.Sprintf("--data: %v", err),
 				"quote the value — a declared secret is masked by string rules, and an unquoted one would print in full")
