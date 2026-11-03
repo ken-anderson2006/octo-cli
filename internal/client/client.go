@@ -55,6 +55,15 @@ type Options struct {
 // For non-JSON payloads (e.g. multipart uploads) set RawBody + ContentType.
 // When RawBody is non-nil, Body is ignored and no JSON marshaling is performed.
 type Request struct {
+	// MaxResponseBytes bounds buffered responses for callers with a small wire contract.
+	// Zero preserves the existing business-response limit.
+	MaxResponseBytes int64
+	Service          string
+	// Credential selects the authorization boundary used by the command layer.
+	// Empty means the active Bot credential; "mail" means the Agent Mail token
+	// bound to that same Bot identity. The transport itself never resolves
+	// secrets.
+	Credential  string
 	Method      string
 	Path        string
 	Query       url.Values
@@ -1104,9 +1113,16 @@ func (c *Client) attempt(ctx context.Context, req *Request, urlStr string, body 
 	// --output write all consume the complete payload. The CLI --output path
 	// still buffers a large export (docs.ppt.export allows up to 160 MiB);
 	// streaming it to the temp file is a separate change.
-	respBody, err := io.ReadAll(resp.Body)
+	var responseReader io.Reader = resp.Body
+	if req.MaxResponseBytes > 0 {
+		responseReader = io.LimitReader(resp.Body, req.MaxResponseBytes+1)
+	}
+	respBody, err := io.ReadAll(responseReader)
 	if err != nil {
 		return nil, output.ErrNetwork(fmt.Sprintf("read response: %v", err), "")
+	}
+	if req.MaxResponseBytes > 0 && int64(len(respBody)) > req.MaxResponseBytes {
+		return nil, output.ErrAPI("RESPONSE_TOO_LARGE", "response exceeds the configured limit", "")
 	}
 
 	c.verbosef("← %d (%d bytes)", resp.StatusCode, len(respBody))

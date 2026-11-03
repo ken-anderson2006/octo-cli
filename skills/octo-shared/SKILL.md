@@ -35,3 +35,33 @@ feature requires private shared Redis and an explicitly routed public HTTPS
 MCP download service, including for stdio publishers. Rotation does not revoke
 issued snapshots. The linked reference covers configuration, bounds, retention
 and client-history limits.
+
+## 10. MCP context admission
+
+MCP verifies a `bf_` User Bot for each tool RPC, including discovery and direct
+secret access. HTTP protocol requests also require a bearer. Production reads
+the current per-Bot context policy through the opt-in verify-bot response;
+missing or failed policy reads refuse the call. Other credential types are
+outside this MCP contract. Every admitted tool request is durably recorded
+before business execution using a closed argument whitelist; responses and
+outcomes are excluded.
+
+Strict mode requires a complete `params._meta.octo` v1 declaration containing
+raw `sender`, `channel`, `channel_type` (1/2/5), `space_id`, and a lossless decimal
+string `message_id` under `im`. Compatible mode permits complete absence, while
+malformed declarations fail in either mode. This is a client source claim,
+not membership evidence or authority to select the actor or destination.
+OBO configuration and delegation controls are forbidden in MCP.
+
+Operators must pre-create private POSIX request storage and set
+`OCTO_MCP_REQUEST_LOG_DIR`. Debug requires explicit `--policy-debug` and
+`--policy-debug-file` startup flags plus a private, origin-bound policy file;
+it replaces only the policy source and still requires real Bot verification.
+The debug snapshot changes only after restart. No automatic production
+fallback or default-switch timer exists.
+
+`mcp serve --dry-run` is rejected without networking. A running server's
+`execute.dry_run=true` still authenticates, resolves policy, and persists the
+request before previewing the business request. See
+`docs/mcp-context-admission.md` for the exact wire and storage contract. IM
+client injection, real group integration and management UI are separate work.

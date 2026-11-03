@@ -201,6 +201,29 @@ func (f *Factory) Credential() (*credential.Credential, error) { return f.Creden
 // Client returns the resolved HTTP client (cached).
 func (f *Factory) Client() (*client.Client, error) { return f.ClientFunc() }
 
+// BindVerifiedBotIdentity binds a private per-RPC factory after read-only remote
+// verification. It never saves a profile and cannot be reached through flags.
+func (f *Factory) BindVerifiedBotIdentity(expectedToken, expectedOrigin, uid string) error {
+	bot, err := f.Credential()
+	if err != nil || bot == nil || bot.Token != expectedToken || uid == "" {
+		return output.ErrAuth("Bot snapshot mismatch", "")
+	}
+	cfg, err := f.Config()
+	if err != nil || cfg == nil || cfg.APIBaseURL != expectedOrigin || (bot.RobotID != "" && bot.RobotID != uid) {
+		return output.ErrAuth("Bot snapshot mismatch", "")
+	}
+	bc, cc := *bot, *cfg
+	bc.RobotID = uid
+	cc.BotToken = bc.Token
+	f.cred, f.config, f.cli, f.botIdentityVerified = &bc, &cc, nil, true
+	f.CredentialFunc = func() (*credential.BotCredential, error) { c := bc; return &c, nil }
+	f.ConfigFunc = func() (*config.Config, error) { c := cc; return &c, nil }
+	f.ClientFunc = func() (*client.Client, error) {
+		return client.New(&cc, &bc, client.Options{DryRun: f.Globals.DryRun, NoRetry: f.Globals.NoRetry, Timeout: f.Globals.Timeout, ErrOut: io.Discard}), nil
+	}
+	return nil
+}
+
 // Registry returns the spec registry (cached). Tests may inject a stub by
 // replacing RegistryFunc.
 func (f *Factory) Registry() *registry.Registry {
