@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -29,6 +30,7 @@ import (
 	"github.com/Mininglamp-OSS/octo-cli/internal/config"
 	"github.com/Mininglamp-OSS/octo-cli/internal/credential"
 	"github.com/Mininglamp-OSS/octo-cli/internal/output"
+	"github.com/Mininglamp-OSS/octo-cli/internal/permission"
 )
 
 // Retry defaults per architecture-design.md §6.2.
@@ -41,6 +43,9 @@ const (
 
 // Options controls client runtime behaviour. Zero values are sensible defaults.
 type Options struct {
+	// TLSConfig is supplied only by a private, pinned host composition.
+	TLSConfig *tls.Config
+
 	Verbose bool
 	DryRun  bool
 	NoRetry bool
@@ -55,6 +60,8 @@ type Options struct {
 // For non-JSON payloads (e.g. multipart uploads) set RawBody + ContentType.
 // When RawBody is non-nil, Body is ignored and no JSON marshaling is performed.
 type Request struct {
+	// OperationID is trusted engine metadata, never an HTTP header or argument.
+	OperationID string
 	// MaxResponseBytes bounds buffered responses for callers with a small wire contract.
 	// Zero preserves the existing business-response limit.
 	MaxResponseBytes int64
@@ -770,11 +777,16 @@ func New(cfg *config.Config, cred *credential.Credential, opts Options) *Client 
 			fmt.Fprintf(opts.ErrOut, "warning: invalid --timeout %q; using %s\n", opts.Timeout, defaultTimeout) //nolint:errcheck // stderr warning
 		}
 	}
+	var transport http.RoundTripper
+	if opts.TLSConfig != nil {
+		transport = &http.Transport{TLSClientConfig: opts.TLSConfig.Clone(), DisableKeepAlives: true}
+	}
 	return &Client{
 		cfg:  cfg,
 		cred: cred,
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: transport,
 			// Don't auto-follow — file.download returns 302 to a presigned URL
 			// and we want to surface that URL in the envelope, not fetch it.
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -909,6 +921,17 @@ func (c *Client) do(ctx context.Context, req *Request) ([]byte, error) {
 	if err != nil {
 		return nil, settleFailure(req, err, mayHaveApplied)
 	}
+	if permission.BoundCall(ctx) != nil {
+		target, parseErr := url.Parse(u)
+		if parseErr != nil {
+			return nil, permission.PolicyUnavailable()
+		}
+		scoped, e := permission.RequestContext(ctx, req.Service, req.OperationID, req.Method, target.EscapedPath())
+		if e != nil {
+			return nil, e
+		}
+		return permission.BoundCall(scoped).ConsumeBytes(scoped, result)
+	}
 	return result, nil
 }
 
@@ -924,6 +947,9 @@ func (c *Client) do(ctx context.Context, req *Request) ([]byte, error) {
 // stands: a definite refusal, a backend error, or a failure that never reached
 // the backend (NotProcessed).
 func settleFailure(req *Request, err error, mayHaveApplied bool) error {
+	if permission.IsRefusal(err) {
+		return err
+	}
 	err = withRetryAfterHint(err)
 	if !mayHaveApplied {
 		return err
@@ -1062,13 +1088,25 @@ func (c *Client) attempt(ctx context.Context, req *Request, urlStr string, body 
 		cancelled.NotProcessed = true
 		return nil, cancelled
 	}
-	resp, err := c.httpClient.Do(httpReq)
+	var resp *http.Response
+	if bound := permission.BoundCall(ctx); bound != nil {
+		var scoped context.Context
+		scoped, err = permission.RequestContext(ctx, req.Service, req.OperationID, httpReq.Method, httpReq.URL.EscapedPath())
+		if err == nil {
+			resp, err = permission.BoundCall(scoped).RoundTrip(scoped, httpReq)
+		}
+	} else {
+		resp, err = c.httpClient.Do(httpReq)
+	}
 	if err != nil {
 		var urlErr *url.Error
 		if errors.As(err, &urlErr) && strings.HasPrefix(urlErr.Err.Error(), "failed to parse Location header ") {
 			// net/http received the redirect before failing to parse its
 			// Location. Return a terminal error to avoid replaying the request.
 			return nil, output.ErrNetwork("server returned an invalid redirect location", "")
+		}
+		if permission.IsRefusal(err) {
+			return nil, err
 		}
 		// *url.Error.Error() embeds the whole request URL, so an x-octo-secret
 		// path parameter (invite / share token) would otherwise reach the default
