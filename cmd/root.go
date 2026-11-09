@@ -58,6 +58,7 @@ func newRootCmd(f *cmdutil.Factory, mode commandMode) *cobra.Command {
 		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 	}
 
 	pf := root.PersistentFlags()
@@ -81,6 +82,7 @@ func newRootCmd(f *cmdutil.Factory, mode commandMode) *cobra.Command {
 	}
 	service.RegisterServiceCommands(root, f)
 
+	bindTurnRelayRoot(root, f)
 	return root
 }
 
