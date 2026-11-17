@@ -15,12 +15,14 @@ image digest recorded by the package job.
 
 ## GitLab CI variables
 
-Set `MCP_CI_IMAGE_ROOT` to the registry path that supplies the Octo CI
-`golang:1.25`, `docker:20.10.17`, and `alpine:3.19` images. The runner tagged
-`tke-deepmining-runner` provides the Docker daemon at `docker:2375`. The Go
-image needs Git and curl for the deploy job. Set `MCP_CONTAINER_IMAGE` to the
-dedicated container repository. Use masked `HARBOR_USER` and `HARBOR_PWD` for
-registry authentication. Use Docker-compatible release tags.
+`MCP_CI_IMAGE_ROOT` defaults to the same Tencent Cloud registry path as
+`octo-server`, `tbj7-xtiao-tcr1.tencentcloudcr.com/xtiao-release`. The
+`tke-deepmining-runner` pulls the job images from this registry and provides
+the Docker daemon at `docker:2375`. The package job uses the same registry for
+its Go builder and Alpine runtime images. The deploy job needs Git and curl
+in its Go image. Set `MCP_CONTAINER_IMAGE` to the dedicated container
+repository and use masked `HARBOR_USER` and `HARBOR_PWD` to authenticate image
+pushes. Use Docker-compatible release tags.
 
 Scope the following variables to the `develop` and `prod` GitLab environments.
 Set `CODE_TOKEN` and `ARGOCD_TOKEN` as masked variables available to the
