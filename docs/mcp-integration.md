@@ -11,8 +11,10 @@ identity and permissions.
 GitLab CI publishes the image and triggers Argo CD. The `test` branch deploys
 to `dmwork-test` using a qcloud HTTPS Ingress and an `autoscaling/v2beta2`
 HPA. The test pipeline takes the MCP CLB ID and TLS Secret from
-`MCP_INGRESS_CLB_ID` and `MCP_INGRESS_TLS_SECRET`. Configure the test
-hostname and per-Pod metrics through the [CI deployment guide](../ci/mcp/README.md).
+`MCP_INGRESS_CLB_ID` and `MCP_INGRESS_TLS_SECRET`. For a single-label
+subdomain of `deepminer.com.cn`, reuse the wildcard certificate Secret
+from the Octo test Ingress. See the [CI deployment guide](../ci/mcp/README.md)
+for the Secret lookup and metrics configuration.
 
 ## Run a local HTTP test service
 

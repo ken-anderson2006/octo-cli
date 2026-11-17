@@ -48,9 +48,21 @@ The Argo CD token needs sync access to the corresponding MCP applications.
 The `test` branch renders a dedicated `networking.k8s.io/v1` Ingress of class
 `qcloud`. It routes HTTPS requests for the MCP host at `/mcp` to the
 `octo-cli-mcp` ClusterIP Service. The associated TkeServiceConfig probes the
-backend at `/readyz`. Point the MCP hostname at the assigned CLB and provision
-the TKE certificate Secret in `dmwork-test`. The test Argo CD application needs
-access to reconcile the Ingress and TkeServiceConfig in that namespace.
+backend at `/readyz`. Point the MCP hostname at the assigned CLB. The test
+Argo CD application needs access to reconcile the Ingress and TkeServiceConfig
+in `dmwork-test`.
+
+For a single-label subdomain of `deepminer.com.cn`, such as
+`mcp-test.deepminer.com.cn`, reuse the current wildcard certificate Secret
+from `test-ingress` in `dmwork-test`. Set `MCP_INGRESS_TLS_SECRET` in the
+GitLab `develop` environment to the name returned by this command. If you
+choose another hostname, use a Secret in `dmwork-test` whose certificate
+covers that hostname.
+
+```sh
+kubectl --context dmwork-test -n dmwork-test get ingress test-ingress -o json |
+  jq -r '.spec.tls[] | select(.hosts | index("im-test.deepminer.com.cn")) | .secretName'
+```
 [Tencent TKE Ingress certificate configuration](https://cloud.tencent.com/document/product/457/45738)
 [Tencent TKE Ingress health checks](https://intl.cloud.tencent.com/zh/document/product/457/37015)
 
