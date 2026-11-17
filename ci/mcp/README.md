@@ -20,9 +20,12 @@ image digest recorded by the package job.
 `tke-deepmining-runner` pulls the job images from this registry and provides
 the Docker daemon at `docker:2375`. The package job uses the same registry for
 its Go builder and Alpine runtime images. The deploy job needs Git and curl
-in its Go image. Set `MCP_CONTAINER_IMAGE` to the dedicated container
-repository and use masked `HARBOR_USER` and `HARBOR_PWD` to authenticate image
-pushes. Use Docker-compatible release tags.
+in its Go image.
+
+`CONTAINER_IMAGE` defaults to
+`tbj7-xtiao-tcr1.tencentcloudcr.com/dmwork/octo-cli-mcp` in `.gitlab-ci.yml`.
+The package job appends the release tag and authenticates with masked
+`HARBOR_USER` and `HARBOR_PWD` variables. Use Docker-compatible release tags.
 
 Scope the following variables to the `develop` and `prod` GitLab environments.
 Set `CODE_TOKEN` and `ARGOCD_TOKEN` as masked variables available to the

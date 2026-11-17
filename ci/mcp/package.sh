@@ -2,14 +2,14 @@
 set -eu
 
 : "${MCP_CI_IMAGE_ROOT:?Set the CI tools image root}"
-: "${MCP_CONTAINER_IMAGE:?Set the MCP image repository}"
+: "${CONTAINER_IMAGE:?Set the MCP image repository}"
 : "${HARBOR_USER:?Set the registry username}"
 : "${HARBOR_PWD:?Set the registry password}"
 
 version=${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}
 tag=${CI_COMMIT_TAG:-$MCP_RELEASE_CHANNEL-$CI_PIPELINE_ID}
-image="$MCP_CONTAINER_IMAGE:$tag"
-registry=${MCP_CONTAINER_IMAGE%%/*}
+image="$CONTAINER_IMAGE:$tag"
+registry=${CONTAINER_IMAGE%%/*}
 
 attempt=0
 until docker info >/dev/null 2>&1; do
@@ -29,7 +29,7 @@ docker build -f ci/mcp/Dockerfile \
 docker push "$image"
 
 digest_ref=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" |
-    awk -v prefix="$MCP_CONTAINER_IMAGE@sha256:" 'index($0, prefix) == 1 { print; exit }')
+    awk -v prefix="$CONTAINER_IMAGE@sha256:" 'index($0, prefix) == 1 { print; exit }')
 if [ -z "$digest_ref" ]; then
     echo "No registry digest found for the pushed MCP image" >&2
     exit 1

@@ -23,6 +23,7 @@ stages:
 variables:
   GOPROXY: "https://goproxy.cn,direct"
   MCP_CI_IMAGE_ROOT: "tbj7-xtiao-tcr1.tencentcloudcr.com/xtiao-release"
+  CONTAINER_IMAGE: "tbj7-xtiao-tcr1.tencentcloudcr.com/dmwork/octo-cli-mcp"
 
 default:
   tags: [tke-deepmining-runner]
