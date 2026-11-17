@@ -41,6 +41,7 @@ package_image:
   stage: package
   image: "${MCP_CI_IMAGE_ROOT}/docker:20.10.17"
   variables:
+    HARBOR_USER: "100028731872"
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
     DOCKER_BUILDKIT: "1"

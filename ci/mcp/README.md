@@ -24,8 +24,9 @@ in its Go image.
 
 `CONTAINER_IMAGE` defaults to
 `tbj7-xtiao-tcr1.tencentcloudcr.com/dmwork/octo-cli-mcp` in `.gitlab-ci.yml`.
-The package job appends the release tag and authenticates with masked
-`HARBOR_USER` and `HARBOR_PWD` variables. Use Docker-compatible release tags.
+The package job appends the release tag and defaults `HARBOR_USER` to the
+same TCR username as `octo-server`. Set `HARBOR_PWD` as a masked CI variable
+available to the package job. Use Docker-compatible release tags.
 
 Scope the following variables to the `develop` and `prod` GitLab environments.
 Set `CODE_TOKEN` and `ARGOCD_TOKEN` as masked variables available to the
