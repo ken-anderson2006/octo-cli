@@ -6,10 +6,43 @@ set -eu
 : "${MCP_NAMESPACE:?Set the deployment namespace}"
 : "${MCP_OCTO_GATEWAY_URL:?Set the Octo API gateway origin}"
 : "${MCP_PUBLIC_HOST:?Set the MCP ingress hostname}"
-: "${MCP_GATEWAY_NAME:?Set the existing HTTPS Gateway name}"
-: "${MCP_GATEWAY_NAMESPACE:?Set the HTTPS Gateway namespace}"
 
-gateway_listener=${MCP_GATEWAY_LISTENER:-https}
+validate_values() {
+    for value do
+        case "$value" in
+            ''|*[!a-zA-Z0-9._/+:@-]*)
+                echo "CI deployment values must be plain image references, origins, names or resource quantities" >&2
+                exit 1 ;;
+        esac
+    done
+}
+
+case "${MCP_DEPLOY_ENV:-}" in
+    develop)
+        : "${MCP_INGRESS_CLB_ID:?Set the CLB ID for the test MCP Ingress}"
+        : "${MCP_INGRESS_TLS_SECRET:?Set the test MCP Ingress certificate secret}"
+        validate_values "$MCP_INGRESS_CLB_ID" "$MCP_INGRESS_TLS_SECRET"
+        route_template=deploy-test.yaml
+        hpa_api_version=autoscaling/v2beta2
+        pod_annotations='{prometheus.io/scrape: "true", prometheus.io/path: "/metrics", prometheus.io/port: "8765"}'
+        set -- -e "s|{{INGRESS_CLB_ID}}|$MCP_INGRESS_CLB_ID|g" \
+            -e "s|{{INGRESS_TLS_SECRET}}|$MCP_INGRESS_TLS_SECRET|g"
+        ;;
+    prod)
+        : "${MCP_GATEWAY_NAME:?Set the existing HTTPS Gateway name}"
+        : "${MCP_GATEWAY_NAMESPACE:?Set the HTTPS Gateway namespace}"
+        gateway_listener=${MCP_GATEWAY_LISTENER:-https}
+        validate_values "$MCP_GATEWAY_NAME" "$MCP_GATEWAY_NAMESPACE" "$gateway_listener"
+        route_template=deploy-prod.yaml
+        hpa_api_version=autoscaling/v2
+        pod_annotations='{}'
+        set -- -e "s|{{GATEWAY_NAME}}|$MCP_GATEWAY_NAME|g" \
+            -e "s|{{GATEWAY_NAMESPACE}}|$MCP_GATEWAY_NAMESPACE|g" \
+            -e "s|{{GATEWAY_LISTENER}}|$gateway_listener|g"
+        ;;
+    *) echo "Unexpected MCP deployment environment" >&2; exit 1 ;;
+esac
+
 image_pull_secret=${MCP_IMAGE_PULL_SECRET:-tcr-image-xtiao}
 cpu_request=${MCP_CPU_REQUEST:-250m}
 memory_request=${MCP_MEMORY_REQUEST:-256Mi}
@@ -22,15 +55,8 @@ target_inflight=${MCP_TARGET_INFLIGHT:-12}
 drain_delay=${MCP_DRAIN_DELAY_SECONDS:-5}
 shutdown_timeout=${MCP_SHUTDOWN_TIMEOUT_SECONDS:-150}
 
-for value in "$MCP_DEPLOY_IMAGE" "$MCP_NAMESPACE" "$MCP_OCTO_GATEWAY_URL" \
-    "$MCP_PUBLIC_HOST" "$MCP_GATEWAY_NAME" "$MCP_GATEWAY_NAMESPACE" \
-    "$gateway_listener" "$image_pull_secret" "$cpu_request" "$memory_request" "$cpu_limit" "$memory_limit"; do
-    case "$value" in
-        ''|*[!a-zA-Z0-9._/+:@-]*)
-            echo "CI deployment values must be plain image references, origins, names or resource quantities" >&2
-            exit 1 ;;
-    esac
-done
+validate_values "$MCP_DEPLOY_IMAGE" "$MCP_NAMESPACE" "$MCP_OCTO_GATEWAY_URL" \
+    "$MCP_PUBLIC_HOST" "$image_pull_secret" "$cpu_request" "$memory_request" "$cpu_limit" "$memory_limit"
 case "$MCP_OCTO_GATEWAY_URL" in
     http://*|https://*) ;;
     *) echo "MCP_OCTO_GATEWAY_URL requires an HTTP or HTTPS origin" >&2; exit 1 ;;
@@ -63,15 +89,15 @@ if [ "$min_replicas" -lt 1 ] || [ "$max_replicas" -lt "$min_replicas" ] ||
 fi
 termination_grace=$((drain_delay + shutdown_timeout + 10))
 
+template_dir=$(dirname "$0")
 sed -e "s|{{PIPELINE_ID}}|$CI_PIPELINE_ID|g" \
     -e "s|{{NAMESPACE}}|$MCP_NAMESPACE|g" \
     -e "s|{{IMAGE}}|$MCP_DEPLOY_IMAGE|g" \
     -e "s|{{IMAGE_PULL_SECRET}}|$image_pull_secret|g" \
     -e "s|{{OCTO_GATEWAY_URL}}|$MCP_OCTO_GATEWAY_URL|g" \
     -e "s|{{PUBLIC_HOST}}|$MCP_PUBLIC_HOST|g" \
-    -e "s|{{GATEWAY_NAME}}|$MCP_GATEWAY_NAME|g" \
-    -e "s|{{GATEWAY_NAMESPACE}}|$MCP_GATEWAY_NAMESPACE|g" \
-    -e "s|{{GATEWAY_LISTENER}}|$gateway_listener|g" \
+    -e "s|{{HPA_API_VERSION}}|$hpa_api_version|g" \
+    -e "s|{{POD_ANNOTATIONS}}|$pod_annotations|g" \
     -e "s|{{CPU_REQUEST}}|$cpu_request|g" \
     -e "s|{{MEMORY_REQUEST}}|$memory_request|g" \
     -e "s|{{CPU_LIMIT}}|$cpu_limit|g" \
@@ -83,4 +109,4 @@ sed -e "s|{{PIPELINE_ID}}|$CI_PIPELINE_ID|g" \
     -e "s|{{DRAIN_DELAY}}|$drain_delay|g" \
     -e "s|{{SHUTDOWN_TIMEOUT}}|$shutdown_timeout|g" \
     -e "s|{{TERMINATION_GRACE}}|$termination_grace|g" \
-    "$(dirname "$0")/deploy.yaml"
+    "$@" "$template_dir/deploy.yaml" "$template_dir/$route_template"

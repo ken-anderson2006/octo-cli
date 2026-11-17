@@ -8,9 +8,11 @@ identity and permissions.
 
 ## Enterprise deployment
 
-The enterprise deployment runs through GitLab CI and Argo CD. Configure the
-HTTPS gateway, release environments and Pod autoscaling in the
-[CI deployment guide](../ci/mcp/README.md).
+GitLab CI publishes the image and triggers Argo CD. The `test` branch deploys
+to `dmwork-test` using a qcloud HTTPS Ingress and an `autoscaling/v2beta2`
+HPA. The test pipeline takes the MCP CLB ID and TLS Secret from
+`MCP_INGRESS_CLB_ID` and `MCP_INGRESS_TLS_SECRET`. Configure the test
+hostname and per-Pod metrics through the [CI deployment guide](../ci/mcp/README.md).
 
 ## Run a local HTTP test service
 
@@ -28,7 +30,7 @@ OCTO_API_BASE_URL=https://octo-gateway.example.com \
   ./bin/octo-cli mcp serve --listen 127.0.0.1:8765
 ```
 
-The production HTTPS gateway routes `https://octo-mcp.example.com/mcp` to the
+The HTTPS ingress routes `https://octo-mcp.example.com/mcp` to the
 MCP Service. Preserve the
 `Authorization`, `Content-Type`, `Accept`, and `MCP-Protocol-Version` headers
 and the request body. Keep the MCP service within the Octo gateway's trust

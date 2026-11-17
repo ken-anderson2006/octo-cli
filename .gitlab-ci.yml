@@ -9,6 +9,7 @@ workflow:
       variables:
         MCP_RELEASE_CHANNEL: test
         MCP_DEPLOY_ENV: develop
+        MCP_NAMESPACE: dmwork-test
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "develop"'
       variables:
         MCP_RELEASE_CHANNEL: dev

@@ -1,0 +1,37 @@
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: octo-cli-mcp
+  namespace: "{{NAMESPACE}}"
+spec:
+  parentRefs:
+    - name: "{{GATEWAY_NAME}}"
+      namespace: "{{GATEWAY_NAMESPACE}}"
+      sectionName: "{{GATEWAY_LISTENER}}"
+  hostnames:
+    - "{{PUBLIC_HOST}}"
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /mcp
+      backendRefs:
+        - name: octo-cli-mcp
+          port: 80
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: octo-cli-mcp
+  namespace: "{{NAMESPACE}}"
+  labels:
+    app.kubernetes.io/name: octo-cli-mcp
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: octo-cli-mcp
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
