@@ -36,35 +36,24 @@ The Argo CD token needs sync access to the corresponding MCP applications.
 | `MCP_ARGOCD_APP` | Application tracking `manifests/` on the matching release branch |
 | `MCP_NAMESPACE` | Application namespace. The `test` pipeline defaults to `dmwork-test` |
 | `MCP_OCTO_GATEWAY_URL` | Octo API origin used for business calls |
-| `MCP_PUBLIC_HOST` | External MCP hostname |
-| `MCP_INGRESS_CLB_ID` | `develop` environment only. Existing Tencent CLB ID assigned to the MCP Ingress |
-| `MCP_INGRESS_TLS_SECRET` | `develop` environment only. Name of the HTTPS Secret containing `qcloud_cert_id` in `MCP_NAMESPACE` |
+| `MCP_PUBLIC_HOST` | `prod` environment only. External MCP hostname |
 | `MCP_GATEWAY_NAME`, `MCP_GATEWAY_NAMESPACE` | `prod` environment only. Platform HTTPS Gateway serving the MCP hostname |
 | `MCP_GATEWAY_LISTENER` | `prod` environment only. Listener name, default `https` |
 | `MCP_IMAGE_PULL_SECRET` | Registry read secret in the target namespace, default `tcr-image-xtiao` |
 
 ## HTTPS ingress
 
-The `test` branch renders a dedicated `networking.k8s.io/v1` Ingress of class
-`qcloud`. It routes HTTPS requests for the MCP host at `/mcp` to the
-`octo-cli-mcp` ClusterIP Service. The associated TkeServiceConfig probes the
-backend at `/readyz`. Point the MCP hostname at the assigned CLB. The test
-Argo CD application needs access to reconcile the Ingress and TkeServiceConfig
-in `dmwork-test`.
+The test endpoint is `https://im-test.deepminer.com.cn/mcp`. It uses the
+shared qcloud Ingress `test-ingress`, its CLB and TLS certificate, and the
+`dmwork-web-develop` Web gateway. The MCP CI release publishes the
+Deployment, ClusterIP Service and HPA in `dmwork-test`.
 
-For a single-label subdomain of `deepminer.com.cn`, such as
-`mcp-test.deepminer.com.cn`, reuse the current wildcard certificate Secret
-from `test-ingress` in `dmwork-test`. Set `MCP_INGRESS_TLS_SECRET` in the
-GitLab `develop` environment to the name returned by this command. If you
-choose another hostname, use a Secret in `dmwork-test` whose certificate
-covers that hostname.
-
-```sh
-kubectl --context dmwork-test -n dmwork-test get ingress test-ingress -o json |
-  jq -r '.spec.tls[] | select(.hosts | index("im-test.deepminer.com.cn")) | .secretName'
-```
-[Tencent TKE Ingress certificate configuration](https://cloud.tencent.com/document/product/457/45738)
-[Tencent TKE Ingress health checks](https://intl.cloud.tencent.com/zh/document/product/457/37015)
+To enable the endpoint, the Web gateway owner adds the MCP location inside
+the existing `server` block in `data.default.conf` of the
+`dmwork-web-nginx-develop` ConfigMap. The route uses the server's Kubernetes
+DNS resolver to look up the MCP Service when a request arrives. Roll out
+`dmwork-web-develop` to load the updated template from its ConfigMap
+subPath mount. [MCP Nginx location](test-web-nginx.conf)
 
 The `prod` release renders a Gateway API HTTPRoute. Configure the platform
 Gateway to accept the route from the MCP namespace and authenticate `/mcp`
@@ -74,8 +63,9 @@ requests.
 Preserve the caller's Octo `Authorization` header at the HTTPS ingress. The
 Octo gateway authenticates the forwarded token on business calls. Keep
 `/metrics` on the Pod network. Size the ingress timeout to cover the
-two-minute execution deadline plus HTTP body and response handling. For the
-Tencent CLB, set `proxy_read_timeout` to at least 150 seconds.
+two-minute execution deadline plus HTTP body and response handling. The
+test Nginx route allows 150 seconds for an upstream response. Confirm the
+shared CLB's `proxy_read_timeout` also covers that window.
 [Tencent CLB timeout configuration](https://cloud.tencent.com/document/product/214/15171)
 
 ## Scaling and shutdown
