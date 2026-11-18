@@ -48,9 +48,10 @@ func newMCPServeCmd(f *cmdutil.Factory) *cobra.Command { //nolint:gocyclo // ope
 		forceOnBehalfOf  string
 		allowLocalUpload bool
 		facade           string
-		policyDebug      bool
-		policyDebugFile  string
-		permissionConfig string
+		policyDebug                   bool
+		policyDebugFile               string
+		permissionConfig              string
+		permissionIsolatedTestCatalog bool
 	)
 	serve := &cobra.Command{
 		Use:   "serve",
@@ -185,13 +186,31 @@ turn-limited ticket supplied by the endpoint launcher.`,
 				return output.ErrValidation(err.Error(), "")
 			}
 			defer func() { runErr = errors.Join(runErr, admission.Close()) }()
+			if permissionIsolatedTestCatalog && permissionConfig == "" {
+				return output.ErrValidation("PERMISSION_MANAGED_FLAGS_CONFLICT", "")
+			}
 			if permissionConfig != "" {
 				if httpAddr != "" || policyDebug || allowLocalUpload || tc.ChannelID != "" || tc.ChannelType != "" {
 					return output.ErrValidation("PERMISSION_MANAGED_FLAGS_CONFLICT", "")
 				}
+				if !cmd.Flags().Changed("facade") {
+					fac, _ = mcp.ParseFacade("both")
+				}
 				cfg, err := mcp.LoadPermissionHostConfig(permissionConfig)
 				if err != nil {
 					return output.ErrValidation(err.Error(), "")
+				}
+				if permissionIsolatedTestCatalog {
+					if cfg.CatalogMode == "production" {
+						return output.ErrValidation("PERMISSION_HOST_CONFIG_INVALID", "")
+					}
+					cfg.IsolatedTestCatalog = true
+					if cfg.CatalogMode == "" {
+						cfg.CatalogMode = mcp.IsolatedTestCatalogMode
+					}
+					if cfg.ResponseBudgets != nil && !mcp.IsolatedTestResponseBudgets().Contains(*cfg.ResponseBudgets) {
+						return output.ErrValidation("PERMISSION_HOST_CONFIG_INVALID", "")
+					}
 				}
 				cred, err := f.Credential()
 				if err != nil || cred == nil {
@@ -228,6 +247,7 @@ turn-limited ticket supplied by the endpoint launcher.`,
 	serve.Flags().BoolVar(&policyDebug, "policy-debug", false, "operator only: use an immutable local policy file; real Bot authentication remains required")
 	serve.Flags().StringVar(&policyDebugFile, "policy-debug-file", "", "absolute path to the private policy file; requires --policy-debug")
 	serve.Flags().StringVar(&permissionConfig, "permission-config", "", "private managed host configuration; opens only authenticated host control and turn relays")
+	serve.Flags().BoolVar(&permissionIsolatedTestCatalog, "permission-isolated-test-catalog", false, "isolated test only: enable the bounded explicit isolated-test catalog fixture for --permission-config")
 	return serve
 }
 

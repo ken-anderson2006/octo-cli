@@ -51,7 +51,15 @@ type PermissionHostConfig struct {
 	RelayCertSHA256     string                             `json:"relay_cert_sha256,omitempty"`
 	RelayServerName     string                             `json:"relay_server_name,omitempty"`
 	ResponseBudgets     *permission.ResponseBudgets        `json:"response_budgets,omitempty"`
+	IsolatedTestCatalog bool                               `json:"isolated_test_catalog,omitempty"`
+	CatalogMode         string                             `json:"catalog_mode,omitempty"`
 	AuthorityPins       map[string]permission.AuthorityPin `json:"authority_pins"`
+}
+
+// IsIsolatedTestCatalog reports whether this host configuration explicitly
+// selects the bounded isolated-test catalog fixture path.
+func (c PermissionHostConfig) IsIsolatedTestCatalog() bool {
+	return c.IsolatedTestCatalog || c.CatalogMode == IsolatedTestCatalogMode
 }
 
 type hostIngress struct {

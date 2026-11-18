@@ -1,0 +1,222 @@
+{
+  "format": "permission-isolated-test-catalog-fixture-v1",
+  "task": "XIN-2794",
+  "task_id": "229ad215-8526-4a04-8f5b-36f073f81a16",
+  "charter_task_id": "17e81670-5b49-461d-9509-7c22ca127939",
+  "charter_receipt_comment_id": "65ac8fad-1356-4f0b-a2d2-fe55bab0111e",
+  "preflight_outcome_comment_id": "b7a0d0d2-b7ff-4161-b83e-be825b3b6024",
+  "scope": "Bounded explicit isolated-test catalog fixture path for native CLI startup (octo mcp serve --permission-config <host.json>). Production supportedPermissionReleases and supportedPermissionPackages remain empty and fail-closed.",
+  "production_support_registries": {
+    "supportedPermissionReleases_count": 0,
+    "supportedPermissionPackages_count": 0,
+    "production_default_response_budgets": null,
+    "production_posture": "FAIL_CLOSED"
+  },
+  "bootstrap_opt_in_contract": {
+    "cli_command": "octo mcp serve --permission-config <host.json>",
+    "host_config_fields": {
+      "isolated_test_catalog": true,
+      "catalog_mode": "isolated_test_v1",
+      "release_path": "<abs-path-to-catalog-package-v2/manifest.json>",
+      "release_sha256": "ecc56c2ab0a2c520ab7e5203d2abab06671daf90c28d69f88fe1de8d154109fc"
+    },
+    "cli_flag_alternative": "--permission-isolated-test-catalog",
+    "env_alternative": "OCTO_PERMISSION_ISOLATED_TEST_CATALOG=true",
+    "endpoint_coordinator_process_compatibility": "codex-channel-octo startPermissionCoordinator copies options.hostConfig into the spawned coordinator host.json via canonicalControl, so setting isolated_test_catalog=true (or catalog_mode='isolated_test_v1') in host_config activates the native CLI isolated-test path without test registries or environment injection"
+  },
+  "immutable_package_commitment": {
+    "catalog_format": "permission-catalog-package-v2",
+    "contract_revision": 3,
+    "semantics_version": "1",
+    "catalog_version": "octo-capabilities-v1-xin2748-v4",
+    "manifest_path": "docs/permission/catalog-package-v2/manifest.json",
+    "manifest_bytes": 4934,
+    "manifest_sha256": "ecc56c2ab0a2c520ab7e5203d2abab06671daf90c28d69f88fe1de8d154109fc",
+    "identity_index_sha256": "70cb8771d93bb38788418156029f59f35eb0031f1a8ee3b8d900eb18b673f798",
+    "semantic_sha256": "15c7ca2bf6df703979df529afbca6828f116b2463b1a818456edfad80bcad799",
+    "slot_witness_path": "docs/permission/source-slot-witness-v5.json.gz",
+    "slot_witness_bytes": 12562,
+    "slot_witness_sha256": "0c5da173bd0f53c64562a70a5c5feebc955ad111bbe84ed11f5588c08b4b9c0b",
+    "normative_entries_verified": 827,
+    "files_verified": 30,
+    "stored_bytes": 7823327,
+    "schema_cells": 56592,
+    "discovery_cells": 156,
+    "static_cells": 1248
+  },
+  "scoped_isolated_fixture_response_budgets": {
+    "max_acquisition_bytes": 2097152,
+    "max_page_items": 100,
+    "max_pages": 10,
+    "max_cumulative_bytes": 4194304,
+    "max_serialized_rpc_bytes": 4194304,
+    "semantics": "Applied only when isolated_test_catalog is enabled and response_budgets is omitted in PermissionHostConfig; explicit response_budgets in isolated_test_catalog mode must be Valid() and <= these ceilings."
+  },
+  "checked_fixture_policy": {
+    "enforcement": "Coordinator.ConfigureIsolatedTestFixture installs compiledFixturePolicy before readiness. Every accepted policy bundle P must have Capability.State=='E' (rejecting State=='U' blanket activation) and may only grant capabilities in allowed_capabilities; any allow rule outside allowed_capabilities fails closed with policy_unavailable, and any call to a capability outside allowed_capabilities (including denied_capabilities) fails closed at atBoundary with capability_denied (-32007) and zero upstream HTTP dispatches.",
+    "allowed_capabilities_count": 19,
+    "denied_capabilities_count": 3,
+    "allowed_capabilities": [
+      {
+        "id": "octo-cli/catalog/resource-list/skills",
+        "kind": "inventory",
+        "profile": "resource-inventory",
+        "target": "resources/list",
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/discovery/module-map",
+        "kind": "discovery",
+        "profile": "static-discovery",
+        "target": "empty domain and validated blank query",
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/discovery/search-all",
+        "kind": "discovery",
+        "profile": "static-discovery",
+        "target": "empty domain and validated nonblank query",
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/docs/discovery/search",
+        "kind": "discovery",
+        "profile": "static-discovery",
+        "target": "docs",
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/docs/op/docs.content.get",
+        "kind": "operation",
+        "profile": "leaf",
+        "target": ["docs", "docs.content.get", "GET", "/v1/bot/docs/{docId}/content"],
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/docs/op/docs.get",
+        "kind": "operation",
+        "profile": "leaf",
+        "target": ["docs", "docs.get", "GET", "/v1/bot/docs/{docId}"],
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/docs/op/docs.scene.export",
+        "kind": "operation",
+        "profile": "portable",
+        "target": ["docs", "docs.scene.export", "GET", "/v1/bot/docs/{docId}/export"],
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/docs/op/docs.search",
+        "kind": "operation",
+        "profile": "leaf",
+        "target": ["docs", "docs.search", "POST", "/v1/bot/docs/search"],
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/docs/schema/docs.content.get",
+        "kind": "schema",
+        "profile": "static-schema",
+        "target": ["docs", "docs.content.get"],
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/docs/schema/docs.get",
+        "kind": "schema",
+        "profile": "static-schema",
+        "target": ["docs", "docs.get"],
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/docs/schema/docs.scene.export",
+        "kind": "schema",
+        "profile": "static-schema",
+        "target": ["docs", "docs.scene.export"],
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/docs/schema/docs.search",
+        "kind": "schema",
+        "profile": "static-schema",
+        "target": ["docs", "docs.search"],
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/message/discovery/search",
+        "kind": "discovery",
+        "profile": "static-discovery",
+        "target": "message",
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/message/op/message.search",
+        "kind": "operation",
+        "profile": "search",
+        "target": ["message", "message.search", "POST", "/v1/bot/messages/_search"],
+        "page_bound": {"items": 100, "pages": 10},
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/message/op/message.send",
+        "kind": "operation",
+        "profile": "leaf",
+        "target": ["message", "message.send", "POST", "/v1/bot/sendMessage"],
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/message/schema/message.search",
+        "kind": "schema",
+        "profile": "static-schema",
+        "target": ["message", "message.search"],
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/message/schema/message.send",
+        "kind": "schema",
+        "profile": "static-schema",
+        "target": ["message", "message.send"],
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/skills/resource/octo-docs/SKILL.md",
+        "kind": "resource",
+        "profile": "static-resource",
+        "target": "octo://skills/octo-docs/SKILL.md",
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      },
+      {
+        "id": "octo-cli/skills/resource/octo-messaging/SKILL.md",
+        "kind": "resource",
+        "profile": "static-resource",
+        "target": "octo://skills/octo-messaging/SKILL.md",
+        "journeys": ["1_allowed_call_and_read_reply", "4_revoke_restart_replay"]
+      }
+    ],
+    "denied_capabilities": [
+      {
+        "id": "octo-cli/docs/op/docs.create",
+        "kind": "operation",
+        "profile": "leaf",
+        "target": ["docs", "docs.create", "POST", "/v1/bot/docs"],
+        "journeys": ["3_admitted_turn_denied_write_zero_refused_dispatch"],
+        "expected_refusal": {"jsonrpc_code": -32007, "category": "capability_denied", "upstream_dispatches": 0}
+      },
+      {
+        "id": "octo-cli/docs/op/docs.scene.edit",
+        "kind": "operation",
+        "profile": "leaf",
+        "target": ["docs", "docs.scene.edit", "PATCH", "/v1/bot/docs/{docId}/scene"],
+        "journeys": ["3_admitted_turn_denied_write_zero_refused_dispatch"],
+        "expected_refusal": {"jsonrpc_code": -32007, "category": "capability_denied", "upstream_dispatches": 0}
+      },
+      {
+        "id": "octo-cli/docs/op/docs.scene.get",
+        "kind": "operation",
+        "profile": "leaf",
+        "target": ["docs", "docs.scene.get", "GET", "/v1/bot/docs/{docId}/scene"],
+        "journeys": ["3_admitted_turn_denied_write_zero_refused_dispatch"],
+        "expected_refusal": {"jsonrpc_code": -32007, "category": "capability_denied", "upstream_dispatches": 0}
+      }
+    ]
+  }
+}

@@ -43,15 +43,53 @@ func LoadPermissionHostConfig(path string) (PermissionHostConfig, error) {
 	if err != nil || len(b) > 16384 {
 		return cfg, errors.New("PERMISSION_HOST_CONFIG_INVALID")
 	}
-	fields, err := strictObjectWithOptional(b, []string{"version", "origin", "bot_uid", "recipient_id", "endpoint_incarnation", "peer_sha256", "control_address", "relay_address", "relay_url", "certificate", "private_key", "peer_ca", "release_path", "release_sha256", "authority_pins", "ready_path", "relay_executable"}, "relay_ca", "relay_ca_sha256", "relay_peer_sha256", "relay_cert_sha256", "relay_server_name", "response_budgets")
+	fields, err := strictObjectWithOptional(b, []string{"version", "origin", "bot_uid", "recipient_id", "endpoint_incarnation", "peer_sha256", "control_address", "relay_address", "relay_url", "certificate", "private_key", "peer_ca", "release_path", "release_sha256", "authority_pins", "ready_path", "relay_executable"}, "relay_ca", "relay_ca_sha256", "relay_peer_sha256", "relay_cert_sha256", "relay_server_name", "response_budgets", "isolated_test_catalog", "catalog_mode")
 	if err != nil {
 		return cfg, errors.New("PERMISSION_HOST_CONFIG_INVALID")
 	}
 	if json.Unmarshal(b, &cfg) != nil || cfg.Version != 1 {
 		return cfg, errors.New("PERMISSION_HOST_CONFIG_INVALID")
 	}
+	rawIsolatedVal, hasIsolatedField := fields["isolated_test_catalog"]
+	if hasIsolatedField {
+		trimmed := string(bytes.TrimSpace(rawIsolatedVal))
+		if trimmed != "true" && trimmed != "false" {
+			return cfg, errors.New("PERMISSION_HOST_CONFIG_INVALID")
+		}
+	}
+	if _, hasModeField := fields["catalog_mode"]; hasModeField {
+		if cfg.CatalogMode != IsolatedTestCatalogMode && cfg.CatalogMode != "production" {
+			return cfg, errors.New("PERMISSION_HOST_CONFIG_INVALID")
+		}
+		if hasIsolatedField && ((cfg.IsolatedTestCatalog && cfg.CatalogMode == "production") || (!cfg.IsolatedTestCatalog && cfg.CatalogMode == IsolatedTestCatalogMode)) {
+			return cfg, errors.New("PERMISSION_HOST_CONFIG_INVALID")
+		}
+	}
+	envIsolated, envExplicit, err := parseIsolatedTestCatalogEnv(os.Getenv(EnvPermissionIsolatedTestCatalog))
+	if err != nil {
+		return cfg, errors.New("PERMISSION_HOST_CONFIG_INVALID")
+	}
+	if envExplicit {
+		if envIsolated {
+			if cfg.CatalogMode == "production" || (hasIsolatedField && !cfg.IsolatedTestCatalog) {
+				return cfg, errors.New("PERMISSION_HOST_CONFIG_INVALID")
+			}
+			cfg.IsolatedTestCatalog = true
+		} else if cfg.IsIsolatedTestCatalog() {
+			return cfg, errors.New("PERMISSION_HOST_CONFIG_INVALID")
+		}
+	}
+	if cfg.IsIsolatedTestCatalog() {
+		cfg.IsolatedTestCatalog = true
+		if cfg.CatalogMode == "" {
+			cfg.CatalogMode = IsolatedTestCatalogMode
+		}
+	}
 	if rawBudgets, ok := fields["response_budgets"]; ok {
 		if _, err := strictObject(rawBudgets, "max_acquisition_bytes", "max_page_items", "max_pages", "max_cumulative_bytes", "max_serialized_rpc_bytes"); err != nil || cfg.ResponseBudgets == nil || !cfg.ResponseBudgets.Valid() {
+			return cfg, errors.New("PERMISSION_HOST_CONFIG_INVALID")
+		}
+		if cfg.IsIsolatedTestCatalog() && !IsolatedTestResponseBudgets().Contains(*cfg.ResponseBudgets) {
 			return cfg, errors.New("PERMISSION_HOST_CONFIG_INVALID")
 		}
 	}
@@ -131,6 +169,26 @@ func permissionReleasePageBounds(catalog permission.Catalog, snapshot *permissio
 // ServePermissionHost runs the private authenticated control and turn relay
 // inside the existing MCP host process. No second unmanaged endpoint is opened.
 func ServePermissionHost(ctx context.Context, cfg PermissionHostConfig, token string, build RootBuilder, admission *Admission, facade facadeMode, base cmdutil.GlobalOptions, uploadRoot string, downloads *SecretDownloads) error { //nolint:gocritic // immutable startup inputs stay together
+	if cfg.IsIsolatedTestCatalog() {
+		if cfg.CatalogMode != "" && cfg.CatalogMode != IsolatedTestCatalogMode {
+			return errors.New("PERMISSION_HOST_CONFIG_INVALID")
+		}
+		if cfg.ReleaseSHA256 != IsolatedTestCatalogDigest || !filepath.IsAbs(cfg.ReleasePath) || filepath.Base(cfg.ReleasePath) != "manifest.json" {
+			return errors.New("PERMISSION_RELEASE_UNAVAILABLE")
+		}
+		if cfg.ResponseBudgets == nil {
+			b := IsolatedTestResponseBudgets()
+			cfg.ResponseBudgets = &b
+		} else if !IsolatedTestResponseBudgets().Contains(*cfg.ResponseBudgets) {
+			return errors.New("PERMISSION_HOST_CONFIG_INVALID")
+		}
+		cfg.IsolatedTestCatalog = true
+		cfg.CatalogMode = IsolatedTestCatalogMode
+		return servePermissionHostWithPackages(ctx, cfg, token, build, admission, facade, base, uploadRoot, downloads, map[string]permission.CatalogPin{IsolatedTestCatalogDigest: IsolatedTestCatalogPin()})
+	}
+	if cfg.CatalogMode != "" && cfg.CatalogMode != "production" {
+		return errors.New("PERMISSION_HOST_CONFIG_INVALID")
+	}
 	return servePermissionHostWithPackages(ctx, cfg, token, build, admission, facade, base, uploadRoot, downloads, supportedPermissionPackages)
 }
 
@@ -140,6 +198,11 @@ func servePermissionHostWithPackages(ctx context.Context, cfg PermissionHostConf
 	cancelStartup()
 	if err != nil {
 		return err
+	}
+	if cfg.IsIsolatedTestCatalog() {
+		if snapshot == nil || catalog.Version != IsolatedTestCatalogVersion || catalog.Digest != IsolatedTestCatalogDigest || snapshot.SemanticDigest() != IsolatedTestCatalogSemanticSHA256 {
+			return errors.New("PERMISSION_RELEASE_UNAVAILABLE")
+		}
 	}
 	cert, err := tls.LoadX509KeyPair(cfg.Certificate, cfg.PrivateKey)
 	if err != nil || len(cert.Certificate) == 0 {
@@ -213,6 +276,11 @@ func servePermissionHostWithPackages(ctx context.Context, cfg PermissionHostConf
 	}
 	if err := coordinator.ConfigurePageBounds(pageBounds); err != nil {
 		return err
+	}
+	if cfg.IsIsolatedTestCatalog() {
+		if err := coordinator.ConfigureIsolatedTestFixture(IsolatedTestFixturePolicy()); err != nil {
+			return err
+		}
 	}
 	prototype, err := NewServer(build)
 	if err != nil {
@@ -335,3 +403,122 @@ var supportedPermissionReleases = map[string]supportedPermissionRelease{}
 // Source-compatible docs/search/byte contracts and independent gates are still
 // missing, so a structurally verified candidate is not added to this table.
 var supportedPermissionPackages = map[string]permission.CatalogPin{}
+
+const (
+	// EnvPermissionIsolatedTestCatalog explicitly enables the bounded isolated-test
+	// catalog path when starting the managed permission host. Production startup
+	// leaves this unset so supportedPermissionPackages stays empty and fail-closed.
+	EnvPermissionIsolatedTestCatalog = "OCTO_PERMISSION_ISOLATED_TEST_CATALOG"
+	// IsolatedTestCatalogMode is the explicit PermissionHostConfig catalog_mode
+	// discriminator for the bounded isolated-test catalog path.
+	IsolatedTestCatalogMode = "isolated_test_v1"
+	// IsolatedTestCatalogFormat is the v42 catalog package format discriminator.
+	IsolatedTestCatalogFormat = permission.CatalogPackageFormat
+	// IsolatedTestCatalogContractRevision is the v42 manifest contract_revision.
+	IsolatedTestCatalogContractRevision = 3
+	// IsolatedTestCatalogSemanticsVersion is the v42 manifest semantics_version.
+	IsolatedTestCatalogSemanticsVersion = "1"
+	// IsolatedTestCatalogVersion is the pinned isolated-test catalog_version.
+	IsolatedTestCatalogVersion = "octo-capabilities-v1-xin2748-v4"
+	// IsolatedTestCatalogDigest is the SHA-256 of docs/permission/catalog-package-v2/manifest.json (4,934 bytes).
+	IsolatedTestCatalogDigest = "ecc56c2ab0a2c520ab7e5203d2abab06671daf90c28d69f88fe1de8d154109fc"
+	// IsolatedTestCatalogIdentityIndexSHA256 is the identity_index_sha256 in manifest.json.
+	IsolatedTestCatalogIdentityIndexSHA256 = "70cb8771d93bb38788418156029f59f35eb0031f1a8ee3b8d900eb18b673f798"
+	// IsolatedTestCatalogSemanticSHA256 is the representation-neutral semantic digest
+	// shared across octo-cli, octo-server, and codex-channel-octo.
+	IsolatedTestCatalogSemanticSHA256 = "15c7ca2bf6df703979df529afbca6828f116b2463b1a818456edfad80bcad799"
+)
+
+// IsolatedTestCatalogPin returns the exact immutable v42 catalog package pin
+// scoped exclusively to the isolated-test catalog fixture path.
+func IsolatedTestCatalogPin() permission.CatalogPin {
+	return permission.CatalogPin{
+		Version: IsolatedTestCatalogVersion,
+		Digest:  IsolatedTestCatalogDigest,
+	}
+}
+
+// IsolatedTestResponseBudgets returns the bounded response budgets scoped
+// exclusively to the isolated-test catalog fixture when response_budgets is
+// omitted in PermissionHostConfig. Production defaults remain unselected.
+func IsolatedTestResponseBudgets() permission.ResponseBudgets {
+	return permission.ResponseBudgets{
+		MaxAcquisitionBytes:   2097152,
+		MaxPageItems:          100,
+		MaxPages:              10,
+		MaxCumulativeBytes:    4194304,
+		MaxSerializedRPCBytes: 4194304,
+	}
+}
+
+// IsolatedTestFixturePolicy returns the checked fixture policy that bounds
+// runtime capability exposure in isolated-test mode to only the capabilities
+// required for the four user journeys (including explicitly mapped denied
+// writes/reads), while preserving the full 827-entry normative catalog artifact.
+func IsolatedTestFixturePolicy() permission.IsolatedFixturePolicy {
+	return permission.IsolatedFixturePolicy{
+		CatalogVersion: IsolatedTestCatalogVersion,
+		CatalogDigest:  IsolatedTestCatalogDigest,
+		SemanticDigest: IsolatedTestCatalogSemanticSHA256,
+		AllowedCapabilities: []string{
+			"octo-cli/catalog/resource-list/skills",
+			"octo-cli/discovery/module-map",
+			"octo-cli/discovery/search-all",
+			"octo-cli/docs/discovery/search",
+			"octo-cli/docs/op/docs.content.get",
+			"octo-cli/docs/op/docs.get",
+			"octo-cli/docs/op/docs.scene.export",
+			"octo-cli/docs/op/docs.search",
+			"octo-cli/docs/schema/docs.content.get",
+			"octo-cli/docs/schema/docs.get",
+			"octo-cli/docs/schema/docs.scene.export",
+			"octo-cli/docs/schema/docs.search",
+			"octo-cli/message/discovery/search",
+			"octo-cli/message/op/message.search",
+			"octo-cli/message/op/message.send",
+			"octo-cli/message/schema/message.search",
+			"octo-cli/message/schema/message.send",
+			"octo-cli/skills/resource/octo-docs/SKILL.md",
+			"octo-cli/skills/resource/octo-messaging/SKILL.md",
+		},
+		DeniedCapabilities: []string{
+			"octo-cli/docs/op/docs.create",
+			"octo-cli/docs/op/docs.scene.edit",
+			"octo-cli/docs/op/docs.scene.get",
+		},
+	}
+}
+
+// ReadIsolatedTestRelease loads and verifies the complete immutable v42 catalog
+// package for the explicit isolated-test fixture path. It never trusts an
+// arbitrary runtime digest or modifies the production support registries.
+func ReadIsolatedTestRelease(path, expected string) (permission.Catalog, *permission.VerifiedCatalog, error) {
+	if expected != IsolatedTestCatalogDigest || !filepath.IsAbs(path) || filepath.Base(path) != "manifest.json" {
+		return permission.Catalog{}, nil, errors.New("PERMISSION_RELEASE_UNAVAILABLE")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	catalog, snapshot, err := readPermissionRelease(ctx, path, expected, map[string]permission.CatalogPin{
+		IsolatedTestCatalogDigest: IsolatedTestCatalogPin(),
+	})
+	if err != nil {
+		return permission.Catalog{}, nil, err
+	}
+	if snapshot == nil || catalog.Version != IsolatedTestCatalogVersion || catalog.Digest != IsolatedTestCatalogDigest || snapshot.SemanticDigest() != IsolatedTestCatalogSemanticSHA256 {
+		return permission.Catalog{}, nil, errors.New("PERMISSION_RELEASE_UNAVAILABLE")
+	}
+	return catalog, snapshot, nil
+}
+
+func parseIsolatedTestCatalogEnv(raw string) (enabled, explicit bool, err error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return false, false, nil
+	case "0", "false", "no", "off", "production":
+		return false, true, nil
+	case "1", "true", "yes", "on", IsolatedTestCatalogMode:
+		return true, true, nil
+	default:
+		return false, true, errors.New("PERMISSION_HOST_CONFIG_INVALID")
+	}
+}

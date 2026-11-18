@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 )
@@ -142,6 +143,54 @@ type Coordinator struct {
 	pageBounds      map[string]PageBound
 	responseBudgets *ResponseBudgets
 	packageCatalog  *VerifiedCatalog
+	fixturePolicy   *compiledFixturePolicy
+}
+
+// IsolatedFixturePolicy bounds capability exposure in an explicit isolated-test
+// fixture while keeping the complete v42 827-entry catalog artifact and
+// normative identity validation rules intact.
+type IsolatedFixturePolicy struct {
+	CatalogVersion      string   `json:"catalog_version"`
+	CatalogDigest       string   `json:"catalog_digest"`
+	SemanticDigest      string   `json:"semantic_digest"`
+	AllowedCapabilities []string `json:"allowed_capabilities"`
+	DeniedCapabilities  []string `json:"denied_capabilities"`
+}
+
+type compiledFixturePolicy struct {
+	version  string
+	digest   string
+	semantic string
+	allowed  map[string]bool
+	denied   map[string]bool
+}
+
+func (fp *compiledFixturePolicy) validBundle(p Bundle) bool {
+	if fp == nil {
+		return true
+	}
+	if p.Capability.State != "E" {
+		return false
+	}
+	for _, rule := range p.Capability.Rules {
+		effect, _ := rule["effect"].(string)
+		if effect != "allow" && effect != "deny" {
+			return false
+		}
+		if effect == "allow" {
+			caps, ok := rule["capabilities"].([]any)
+			if !ok || len(caps) == 0 {
+				return false
+			}
+			for _, rawID := range caps {
+				id, ok := rawID.(string)
+				if !ok || !fp.allowed[id] {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 // PageBound is a source-proven count contract from the supported release.
@@ -181,6 +230,16 @@ func (b ResponseBudgets) Valid() bool {
 		b.MaxSerializedRPCBytes >= MinSerializedRPCBudgetBytes &&
 		b.MaxSerializedRPCBytes >= b.MaxAcquisitionBytes &&
 		b.MaxSerializedRPCBytes <= MaxResponseBudgetBytes
+}
+
+// Contains reports whether other is valid and every budget dimension is bounded by b.
+func (b ResponseBudgets) Contains(other ResponseBudgets) bool {
+	return b.Valid() && other.Valid() &&
+		other.MaxAcquisitionBytes <= b.MaxAcquisitionBytes &&
+		other.MaxPageItems <= b.MaxPageItems &&
+		other.MaxPages <= b.MaxPages &&
+		other.MaxCumulativeBytes <= b.MaxCumulativeBytes &&
+		other.MaxSerializedRPCBytes <= b.MaxSerializedRPCBytes
 }
 
 // ResponseBudgetError reports an explicit managed-mode acquisition, pagination,
@@ -248,6 +307,80 @@ func (c *Coordinator) ResponseBudgets() (ResponseBudgets, bool) {
 		return ResponseBudgets{}, false
 	}
 	return *c.responseBudgets, true
+}
+
+// ConfigureIsolatedTestFixture installs a bounded capability exposure policy on
+// top of a complete verified v42 catalog package before any admission.
+func (c *Coordinator) ConfigureIsolatedTestFixture(policy IsolatedFixturePolicy) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.scopes) != 0 || c.fixturePolicy != nil {
+		return ErrConflict
+	}
+	if c.packageCatalog == nil || !asciiToken(policy.CatalogVersion, 64, false) || !validHex(policy.CatalogDigest, 64) || !validHex(policy.SemanticDigest, 64) {
+		return ErrInvalid
+	}
+	if c.catalog.Version != policy.CatalogVersion || c.catalog.Digest != policy.CatalogDigest || c.packageCatalog.SemanticDigest() != policy.SemanticDigest {
+		return ErrInvalid
+	}
+	if len(policy.AllowedCapabilities) == 0 || len(policy.DeniedCapabilities) == 0 {
+		return ErrInvalid
+	}
+	allowed := map[string]bool{}
+	for _, id := range policy.AllowedCapabilities {
+		if !c.caps[id] || allowed[id] || StaticProvenanceRequired(id) {
+			return ErrInvalid
+		}
+		allowed[id] = true
+	}
+	denied := map[string]bool{}
+	for _, id := range policy.DeniedCapabilities {
+		if !c.caps[id] || allowed[id] || denied[id] {
+			return ErrInvalid
+		}
+		denied[id] = true
+	}
+	if len(allowed)+len(denied) >= len(c.caps) {
+		return ErrInvalid
+	}
+	c.fixturePolicy = &compiledFixturePolicy{
+		version:  policy.CatalogVersion,
+		digest:   policy.CatalogDigest,
+		semantic: policy.SemanticDigest,
+		allowed:  allowed,
+		denied:   denied,
+	}
+	return nil
+}
+
+// IsolatedTestFixture returns a detached copy of the configured isolated-test
+// fixture policy, or false when none is installed.
+func (c *Coordinator) IsolatedTestFixture() (IsolatedFixturePolicy, bool) {
+	if c == nil {
+		return IsolatedFixturePolicy{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fixturePolicy == nil {
+		return IsolatedFixturePolicy{}, false
+	}
+	allowed := make([]string, 0, len(c.fixturePolicy.allowed))
+	for id := range c.fixturePolicy.allowed {
+		allowed = append(allowed, id)
+	}
+	sort.Strings(allowed)
+	denied := make([]string, 0, len(c.fixturePolicy.denied))
+	for id := range c.fixturePolicy.denied {
+		denied = append(denied, id)
+	}
+	sort.Strings(denied)
+	return IsolatedFixturePolicy{
+		CatalogVersion:      c.fixturePolicy.version,
+		CatalogDigest:       c.fixturePolicy.digest,
+		SemanticDigest:      c.fixturePolicy.semantic,
+		AllowedCapabilities: allowed,
+		DeniedCapabilities:  denied,
+	}, true
 }
 
 // Invocation is an opaque, revocable host handle. Handles from an earlier
@@ -395,6 +528,9 @@ func (c *Coordinator) atBoundary(ctx context.Context, i *Invocation, capability 
 				}
 			}
 		}
+		if c.fixturePolicy != nil && !c.fixturePolicy.validBundle(p) {
+			return refuse("policy_unavailable")
+		}
 		s := c.scope(&b)
 		if !s.TryLock() {
 			// Waiting behind another physical write invalidates this F/B. Join
@@ -431,7 +567,7 @@ func (c *Coordinator) atBoundary(ctx context.Context, i *Invocation, capability 
 			err = refuse("invocation_denied")
 		} else if next.Invocation && !contributorsAllowed(p.Invocation, f.Contributors) {
 			err = refuse("context_untrusted")
-		} else if capability != "" && (!c.caps[capability] || next.Capability && (!f.CapabilityEligible || !stageAllows(p.Capability, f.Subject, capability))) {
+		} else if capability != "" && (!c.caps[capability] || (c.fixturePolicy != nil && !c.fixturePolicy.allowed[capability]) || next.Capability && (!f.CapabilityEligible || !stageAllows(p.Capability, f.Subject, capability))) {
 			err = refuse("capability_denied")
 		} else if ctx.Err() != nil {
 			err = refuse("policy_unavailable")
