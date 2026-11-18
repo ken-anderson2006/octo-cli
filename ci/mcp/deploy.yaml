@@ -5,6 +5,7 @@ metadata:
   name: octo-cli-mcp
   namespace: "{{NAMESPACE}}"
 spec:
+  replicas: {{REPLICAS}}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -75,30 +76,3 @@ spec:
     - name: http
       port: 80
       targetPort: http
----
-apiVersion: "{{HPA_API_VERSION}}"
-kind: HorizontalPodAutoscaler
-metadata:
-  name: octo-cli-mcp
-  namespace: "{{NAMESPACE}}"
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: octo-cli-mcp
-  minReplicas: {{MIN_REPLICAS}}
-  maxReplicas: {{MAX_REPLICAS}}
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: {{TARGET_CPU}}
-    - type: Pods
-      pods:
-        metric:
-          name: octo_mcp_exec_inflight
-        target:
-          type: AverageValue
-          averageValue: "{{TARGET_INFLIGHT}}"

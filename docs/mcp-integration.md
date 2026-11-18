@@ -9,8 +9,8 @@ identity and permissions.
 ## Enterprise deployment
 
 GitLab CI publishes the image and triggers Argo CD. The `test` branch deploys
-to `dmwork-test` with an `autoscaling/v2beta2` HPA. Once the shared Web
-gateway loads the MCP route, clients can connect to
+to `dmwork-test` with two replicas by default. Once the shared Web gateway
+loads the MCP route, clients can connect to
 `https://im-test.deepminer.com.cn/mcp` through the existing qcloud Ingress
 and CLB. See the route and metrics configuration in the
 [CI deployment guide](../ci/mcp/README.md).
