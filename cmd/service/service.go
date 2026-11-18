@@ -40,6 +40,10 @@ func RegisterServiceCommands(parent *cobra.Command, f *cmdutil.Factory) {
 			}
 			attachOperation(svcCmd, f, detail)
 		}
+		if svc == "loop" {
+			attachTaskAssignAlias(svcCmd, f)
+			attachLoopProjectAliases(svcCmd)
+		}
 	}
 }
 
@@ -185,6 +189,9 @@ func buildOperationCmd(f *cmdutil.Factory, d *registry.OperationDetail, verb str
 	registerHeaderFlags(cmd, rt, d)
 
 	registerBodyFlags(cmd, rt, d)
+	registerLoopProjectFlags(cmd, d)
+	registerTaskAssigneeFlags(cmd, d)
+	registerLoopMemberIDLegacyFlags(cmd, d)
 
 	if d.Pagination != nil {
 		var pageAll bool

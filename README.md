@@ -8,7 +8,8 @@
 builds a single Go binary with an extensible Cobra command tree, credential
 profiles, request previews and structured output for scripts and agents.
 
-This checkout embeds the Octo Server v2 registry under `octo-cli server`.
+This checkout embeds Octo Server v2 under `octo-cli server` and Fleet v2 under
+`octo-cli loop`.
 The framework commands are `api`, `schema`, `auth`, `config`, `skills`, `mcp`,
 `upgrade`, `version`, `help` and `completion`.
 
@@ -41,6 +42,53 @@ Use `server file upload --file <path>` for multipart uploads.
 `api <METHOD> <PATH>` accepts JSON query parameters through `--params` and a
 JSON body through `--data`. Use `--data @file.json` or `--data @-` to read a
 body from a file or stdin. Paths are relative to the configured gateway.
+
+## Loop commands (Fleet v2)
+
+Loop commands use the gateway's `/fleet/api/v2/cli` mount. Configure the gateway
+origin and an owner-bound business Token using the credential options below.
+The Token selects the Space. Workspace operations use an explicit UUID:
+
+```sh
+export OCTO_API_BASE_URL=http://localhost:28080
+export OCTO_TOKEN_FILE=/absolute/path/to/fleet.token
+./bin/octo-cli loop workspace list
+./bin/octo-cli loop task list --workspace-id "$workspace_id" --page-size 10
+./bin/octo-cli loop task create --workspace-id "$workspace_id" --title 'Example task'
+./bin/octo-cli loop task get "$task_id" --workspace-id "$workspace_id"
+./bin/octo-cli loop task update "$task_id" --workspace-id "$workspace_id" --status done
+./bin/octo-cli loop task delete "$task_id" --workspace-id "$workspace_id"
+```
+
+Use `loop --help`, resource help, or `schema --list loop` to discover the
+commands. Workspace-scoped commands require `--workspace-id`; Workspace detail
+commands take their Workspace UUID as a positional argument. `--data` remains
+available for complex bodies and explicit nulls. Task lists accept `--page` and
+`--page-size`; pagination is returned in `_pagination`.
+
+The embedded contract registers 125 Fleet operations, including tasks, comments,
+experts, expert teams, runtimes, projects, labels, attachments and autopilots.
+Writes do not automatically replay an uncertain request. File uploads use
+`--file`; binary downloads support `--output`. Environment values and declared
+signing secrets are masked in request previews and diagnostics.
+
+Fleet remains a separate service. The local gateway must forward `/fleet/api/`
+to Fleet; the local development environment can point that proxy at a native
+`go run ./cmd/server` process. Fleet still validates Token actions, owner,
+Project membership, resource ownership and lifecycle state.
+
+### Existing Loop CLI compatibility
+
+The installed 0.19.5 Loop surface contains 126 commands. This v2 registry
+publishes the same 125 command paths and currently omits the expert-wide
+`loop expert execution cancel` operation because Fleet v2 has no matching
+public route. Individual execution cancellation remains a separate command.
+
+This is not complete argument compatibility: 18 shared commands have flag
+presence/requirement differences, and task/project search currently use flags
+instead of the older positional query. Some gaps are incomplete v2 OpenAPI
+field declarations, such as project create/update bodies. These require
+contract work rather than renaming the public command entry.
 
 ## Configuration and credentials
 

@@ -46,7 +46,7 @@ the hooks and CI install via `make tools` (`golangci-lint`, `gci`).
 ## Architecture and service specifications
 
 The [architecture guide](docs/architecture-design.md) describes the framework
-and metadata extensions. The built-in service registry starts empty.
+and metadata extensions. The built-in service registry includes Server v2 and Fleet v2.
 
 1. Write an OpenAPI 3.x JSON specification in `internal/registry/specs`.
 2. Rebuild with `make build`. Check the generated commands with `--help` and
