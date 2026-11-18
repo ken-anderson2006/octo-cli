@@ -19,23 +19,10 @@ validate_values() {
 template_dir=$(dirname "$0")
 case "${MCP_DEPLOY_ENV:-}" in
     develop)
-        hpa_api_version=autoscaling/v2beta2
         pod_annotations='{prometheus.io/scrape: "true", prometheus.io/path: "/metrics", prometheus.io/port: "8765"}'
-        set -- "$template_dir/deploy.yaml"
         ;;
     prod)
-        : "${MCP_PUBLIC_HOST:?Set the MCP ingress hostname}"
-        : "${MCP_GATEWAY_NAME:?Set the existing HTTPS Gateway name}"
-        : "${MCP_GATEWAY_NAMESPACE:?Set the HTTPS Gateway namespace}"
-        gateway_listener=${MCP_GATEWAY_LISTENER:-https}
-        validate_values "$MCP_PUBLIC_HOST" "$MCP_GATEWAY_NAME" "$MCP_GATEWAY_NAMESPACE" "$gateway_listener"
-        hpa_api_version=autoscaling/v2
         pod_annotations='{}'
-        set -- -e "s|{{PUBLIC_HOST}}|$MCP_PUBLIC_HOST|g" \
-            -e "s|{{GATEWAY_NAME}}|$MCP_GATEWAY_NAME|g" \
-            -e "s|{{GATEWAY_NAMESPACE}}|$MCP_GATEWAY_NAMESPACE|g" \
-            -e "s|{{GATEWAY_LISTENER}}|$gateway_listener|g" \
-            "$template_dir/deploy.yaml" "$template_dir/deploy-prod.yaml"
         ;;
     *) echo "Unexpected MCP deployment environment" >&2; exit 1 ;;
 esac
@@ -45,10 +32,7 @@ cpu_request=${MCP_CPU_REQUEST:-250m}
 memory_request=${MCP_MEMORY_REQUEST:-256Mi}
 cpu_limit=${MCP_CPU_LIMIT:-1}
 memory_limit=${MCP_MEMORY_LIMIT:-512Mi}
-min_replicas=${MCP_MIN_REPLICAS:-2}
-max_replicas=${MCP_MAX_REPLICAS:-10}
-target_cpu=${MCP_TARGET_CPU_PERCENT:-70}
-target_inflight=${MCP_TARGET_INFLIGHT:-12}
+replicas=${MCP_REPLICAS:-2}
 drain_delay=${MCP_DRAIN_DELAY_SECONDS:-5}
 shutdown_timeout=${MCP_SHUTDOWN_TIMEOUT_SECONDS:-150}
 
@@ -71,17 +55,15 @@ if [ "${#digest}" -ne 64 ]; then
     exit 1
 fi
 
-for number in "$CI_PIPELINE_ID" "$min_replicas" "$max_replicas" "$target_cpu" \
-    "$target_inflight" "$drain_delay" "$shutdown_timeout"; do
+for number in "$CI_PIPELINE_ID" "$replicas" "$drain_delay" "$shutdown_timeout"; do
     case "$number" in
         ''|*[!0-9]*|0[0-9]*)
-            echo "MCP replica, autoscaling and shutdown settings require decimal integers" >&2
+            echo "MCP replica and shutdown settings require decimal integers" >&2
             exit 1 ;;
     esac
 done
-if [ "$min_replicas" -lt 1 ] || [ "$max_replicas" -lt "$min_replicas" ] ||
-    [ "$target_cpu" -lt 1 ] || [ "$target_inflight" -lt 1 ] || [ "$shutdown_timeout" -lt 1 ]; then
-    echo "Invalid MCP replica, autoscaling or shutdown setting" >&2
+if ! [ "$replicas" -ge 1 ] || ! [ "$replicas" -le 2147483647 ] || ! [ "$shutdown_timeout" -ge 1 ]; then
+    echo "Invalid MCP replica count or shutdown timeout" >&2
     exit 1
 fi
 termination_grace=$((drain_delay + shutdown_timeout + 10))
@@ -91,17 +73,13 @@ sed -e "s|{{PIPELINE_ID}}|$CI_PIPELINE_ID|g" \
     -e "s|{{IMAGE}}|$MCP_DEPLOY_IMAGE|g" \
     -e "s|{{IMAGE_PULL_SECRET}}|$image_pull_secret|g" \
     -e "s|{{OCTO_GATEWAY_URL}}|$MCP_OCTO_GATEWAY_URL|g" \
-    -e "s|{{HPA_API_VERSION}}|$hpa_api_version|g" \
+    -e "s|{{REPLICAS}}|$replicas|g" \
     -e "s|{{POD_ANNOTATIONS}}|$pod_annotations|g" \
     -e "s|{{CPU_REQUEST}}|$cpu_request|g" \
     -e "s|{{MEMORY_REQUEST}}|$memory_request|g" \
     -e "s|{{CPU_LIMIT}}|$cpu_limit|g" \
     -e "s|{{MEMORY_LIMIT}}|$memory_limit|g" \
-    -e "s|{{MIN_REPLICAS}}|$min_replicas|g" \
-    -e "s|{{MAX_REPLICAS}}|$max_replicas|g" \
-    -e "s|{{TARGET_CPU}}|$target_cpu|g" \
-    -e "s|{{TARGET_INFLIGHT}}|$target_inflight|g" \
     -e "s|{{DRAIN_DELAY}}|$drain_delay|g" \
     -e "s|{{SHUTDOWN_TIMEOUT}}|$shutdown_timeout|g" \
     -e "s|{{TERMINATION_GRACE}}|$termination_grace|g" \
-    "$@"
+    "$template_dir/deploy.yaml"

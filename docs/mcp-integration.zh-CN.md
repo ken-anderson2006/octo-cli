@@ -7,10 +7,9 @@ Streamable HTTP 连接 `/mcp`，在请求头里传入自己已有的 Octo CLI To
 ## 企业部署
 
 GitLab CI 构建镜像并触发 Argo CD 发布。`test` 分支部署到 `dmwork-test`，
-HPA 使用 `autoscaling/v2beta2`。共享 Web 网关加载 MCP 路由后，客户端可通过
-现有 qcloud Ingress 和 CLB 访问 `https://im-test.deepminer.com.cn/mcp`。
-Pod 采集复用 `prometheus.io/*` 注解，由自定义指标适配器向 HPA 提供每个 Pod 的
-`octo_mcp_exec_inflight`。路由和指标接入步骤见 [CI 部署指南](../ci/mcp/README.md)。
+默认运行两个副本。共享 Web 网关加载 MCP 路由后，客户端可通过现有 qcloud Ingress
+和 CLB 访问 `https://im-test.deepminer.com.cn/mcp`。Pod 通过 `prometheus.io/*`
+注解声明 `/metrics` 采集地址。路由和指标配置见 [CI 部署指南](../ci/mcp/README.md)。
 
 ## 启动本地 HTTP 测试服务
 

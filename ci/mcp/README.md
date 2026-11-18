@@ -40,9 +40,6 @@ The Argo CD token needs sync access to the corresponding MCP applications.
 | `MCP_ARGOCD_APP` | Application tracking `manifests/` on the matching release branch |
 | `MCP_NAMESPACE` | Application namespace. The `test` pipeline defaults to `dmwork-test` |
 | `MCP_OCTO_GATEWAY_URL` | Octo API origin used for business calls |
-| `MCP_PUBLIC_HOST` | `prod` environment only. External MCP hostname |
-| `MCP_GATEWAY_NAME`, `MCP_GATEWAY_NAMESPACE` | `prod` environment only. Platform HTTPS Gateway serving the MCP hostname |
-| `MCP_GATEWAY_LISTENER` | `prod` environment only. Listener name, default `https` |
 | `MCP_IMAGE_PULL_SECRET` | Registry read secret in the target namespace, default `tcr-image-xtiao` |
 
 ## HTTPS ingress
@@ -50,7 +47,7 @@ The Argo CD token needs sync access to the corresponding MCP applications.
 The test endpoint is `https://im-test.deepminer.com.cn/mcp`. It uses the
 shared qcloud Ingress `test-ingress`, its CLB and TLS certificate, and the
 `dmwork-web-develop` Web gateway. The MCP CI release publishes the
-Deployment, ClusterIP Service and HPA in `dmwork-test`.
+Deployment and ClusterIP Service in `dmwork-test`.
 
 To enable the endpoint, the Web gateway owner adds the MCP location inside
 the existing `server` block in `data.default.conf` of the
@@ -59,10 +56,7 @@ DNS resolver to look up the MCP Service when a request arrives. Roll out
 `dmwork-web-develop` to load the updated template from its ConfigMap
 subPath mount. [MCP Nginx location](test-web-nginx.conf)
 
-The `prod` release renders a Gateway API HTTPRoute. Configure the platform
-Gateway to accept the route from the MCP namespace and authenticate `/mcp`
-requests.
-[Gateway API HTTP routing](https://gateway-api.sigs.k8s.io/guides/user-guides/http-routing/)
+Manage the production HTTPS route for `/mcp` through the production gateway.
 
 Preserve the caller's Octo `Authorization` header at the HTTPS ingress. The
 Octo gateway authenticates the forwarded token on business calls. Keep
@@ -72,41 +66,25 @@ test Nginx route allows 150 seconds for an upstream response. Confirm the
 shared CLB's `proxy_read_timeout` also covers that window.
 [Tencent CLB timeout configuration](https://cloud.tencent.com/document/product/214/15171)
 
-## Scaling and shutdown
+## Replicas and shutdown
 
 Set capacity from load tests against the target environment. These CI
 variables provide initial values for the rendered resources.
 
 | Variable | Initial value |
 | --- | --- |
-| `MCP_MIN_REPLICAS`, `MCP_MAX_REPLICAS` | `2`, `10` |
+| `MCP_REPLICAS` | `2` |
 | `MCP_CPU_REQUEST`, `MCP_CPU_LIMIT` | `250m`, `1` |
 | `MCP_MEMORY_REQUEST`, `MCP_MEMORY_LIMIT` | `256Mi`, `512Mi` |
-| `MCP_TARGET_CPU_PERCENT`, `MCP_TARGET_INFLIGHT` | `70`, `12` executing calls per Pod |
 | `MCP_DRAIN_DELAY_SECONDS`, `MCP_SHUTDOWN_TIMEOUT_SECONDS` | `5`, `150` |
 
-The test manifest uses `autoscaling/v2beta2` and the same
-`prometheus.io/scrape`, `prometheus.io/path` and `prometheus.io/port` Pod
-annotations as Octo Server in `dmwork-test`. The production manifest uses
-`autoscaling/v2` and a PodMonitor. The collector in each environment must
-retain the `namespace` and `pod` labels on `octo_mcp_exec_inflight`.
+The test Pods advertise their `/metrics` endpoint using `prometheus.io/*`
+annotations. Configure the test Prometheus collector to discover those Pods
+to collect metrics such as `octo_mcp_exec_inflight`.
 
-The HPA reads CPU from the resource metrics API and the per-Pod inflight
-gauge from the custom metrics API. Register the gauge with the adapter
-serving `custom.metrics.k8s.io` through the monitoring platform's CI or
-GitOps release. For Prometheus Adapter, merge the rule into its `rules` list.
-[MCP adapter rule](prometheus-adapter-rule.yaml)
-
-After the test Pods are scraped and the rule is loaded, verify that the
-adapter returns one gauge value per Pod and that the HPA reports both metrics.
-
-```sh
-kubectl --context dmwork-test get --raw \
-  '/apis/custom.metrics.k8s.io/v1beta1/namespaces/dmwork-test/pods/*/octo_mcp_exec_inflight'
-kubectl --context dmwork-test -n dmwork-test describe hpa octo-cli-mcp
-```
-[Kubernetes HPA](https://kubernetes.io/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale/#scaling-on-custom-metrics)
-[Prometheus Adapter configuration](https://github.com/kubernetes-sigs/prometheus-adapter/blob/master/docs/config.md)
+When switching an existing deployment to fixed replicas, sync the new
+manifest and prune the old `octo-cli-mcp` HorizontalPodAutoscaler as an
+individual resource in Argo CD. The deploy job syncs with pruning disabled.
 
 Upon SIGTERM, `/readyz` returns 503 while endpoint changes propagate. The
 listener then closes and accepted requests drain within the shutdown timeout.
