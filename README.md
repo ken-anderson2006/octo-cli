@@ -66,7 +66,7 @@ commands take their Workspace UUID as a positional argument. `--data` remains
 available for complex bodies and explicit nulls. Task lists accept `--page` and
 `--page-size`; pagination is returned in `_pagination`.
 
-The embedded contract registers 125 Fleet operations, including tasks, comments,
+The embedded contract registers 126 Fleet operations, including tasks, comments,
 experts, expert teams, runtimes, projects, labels, attachments and autopilots.
 Writes do not automatically replay an uncertain request. File uploads use
 `--file`; binary downloads support `--output`. Environment values and declared
@@ -77,18 +77,35 @@ to Fleet; the local development environment can point that proxy at a native
 `go run ./cmd/server` process. Fleet still validates Token actions, owner,
 Project membership, resource ownership and lifecycle state.
 
-### Existing Loop CLI compatibility
+### Declarative Loop inputs
 
-The installed 0.19.5 Loop surface contains 126 commands. This v2 registry
-publishes the same 125 command paths and currently omits the expert-wide
-`loop expert execution cancel` operation because Fleet v2 has no matching
-public route. Individual execution cancellation remains a separate command.
+The 126 operations are generated from `internal/registry/specs/loop.json` by the
+shared command engine. Use the declared command and field names:
 
-This is not complete argument compatibility: 18 shared commands have flag
-presence/requirement differences, and task/project search currently use flags
-instead of the older positional query. Some gaps are incomplete v2 OpenAPI
-field declarations, such as project create/update bodies. These require
-contract work rather than renaming the public command entry.
+- Project resources use `project resource create` and `project resource delete`.
+- Project selection uses `--project-id` within the selected Workspace.
+- Assignment uses `task update` with `--assignee-type` and `--assignee-id`, or
+  `--assignee-member-id` for an Octo Project member. Commands send those fields
+  directly and do not scan member, expert or expert-team lists to infer a target.
+- Workspace members use `--page` and `--page-size`. Their Workspace UUID is in
+  the URL, supplied positionally or through `--workspace-id`.
+- Object values and explicit nulls use `--data`. Search terms remain positional
+  through the contract's `x-octo-positional` declaration.
+
+For example:
+
+```sh
+./bin/octo-cli loop workspace member list --workspace-id "$workspace_id" --page 1 --page-size 20
+./bin/octo-cli loop task update "$task_id" --workspace-id "$workspace_id" --assignee-type member --assignee-member-id "$member_id"
+./bin/octo-cli loop task update "$task_id" --workspace-id "$workspace_id" --data '{"assignee_type":null,"assignee_id":null}'
+./bin/octo-cli loop task update "$task_id" --workspace-id "$workspace_id" --data '{"project_id":null}'
+./bin/octo-cli loop project resource create "$project_id" --workspace-id "$workspace_id" --data '{"resource_type":"github_repo","resource_ref":{"url":"https://github.com/example/repo"}}'
+```
+
+Former convenience inputs such as `task assign`, resource `add/remove`,
+`--assignee`, `--project`, `--ref`, member `--limit/--offset`, and the old
+`*-octo-uid` flag aliases are not registered. Use the declared ID fields and
+JSON bodies above instead. Fleet continues to authorize the resulting requests.
 
 ## Configuration and credentials
 

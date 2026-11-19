@@ -63,16 +63,6 @@ func runOperation(cobraCmd *cobra.Command, f *cmdutil.Factory, rt *operationRunt
 	if verr != nil {
 		return emitAndReturn(f, verr)
 	}
-	headers = bindWorkspacePathHeader(rt, pathValues, headers)
-	if err := normalizeWorkspaceMemberPagination(rt, q); err != nil {
-		return emitAndReturn(f, err)
-	}
-	if err := applyLoopProjectQuery(cobraCmd, rt, q); err != nil {
-		return emitAndReturn(f, err)
-	}
-	if err := applyTaskAssigneeQuery(cobraCmd, f, rt, q, headers); err != nil {
-		return emitAndReturn(f, output.AsExitError(cmdutil.WrapCLIError(err)))
-	}
 	// Body: start from --data (if any), then merge explicit flags on top.
 	// Multipart ops take a separate path — they build a form body, not JSON.
 	req := client.Request{
@@ -329,7 +319,7 @@ func collectParameterSecrets(
 // flag is string-backed, else "". Secrets are always string-valued, so a
 // non-string binding is simply not a secret to mask.
 func changedFlagValue(cobraCmd *cobra.Command, flagName string, val *string) string {
-	if val == nil || !loopFlagChanged(cobraCmd, flagName) {
+	if val == nil || !cobraCmd.Flags().Changed(flagName) {
 		return ""
 	}
 	return *val
@@ -389,7 +379,7 @@ func buildQuery(cobraCmd *cobra.Command, rt *operationRuntime) (url.Values, *out
 	}
 	q := url.Values{}
 	for flagName, qf := range rt.queryFlags {
-		if !loopFlagChanged(cobraCmd, flagName) {
+		if !cobraCmd.Flags().Changed(flagName) {
 			continue
 		}
 		if err := addQueryFlagValue(q, rt, flagName, qf); err != nil {
@@ -499,7 +489,7 @@ func validateConditionalQueryRequirements(cobraCmd *cobra.Command, rt *operation
 		if excepted {
 			continue
 		}
-		if loopFlagChanged(cobraCmd, flagName) {
+		if cobraCmd.Flags().Changed(flagName) {
 			value, valueErr := cobraCmd.Flags().GetString(flagName)
 			if valueErr == nil && value != "" {
 				continue
@@ -550,7 +540,7 @@ func queryItemEnum(d *registry.OperationDetail, apiName string) []any {
 func buildHeaders(cobraCmd *cobra.Command, rt *operationRuntime) (map[string]string, *output.ExitError) {
 	var headers map[string]string
 	for flagName, hf := range rt.headerFlags {
-		if !loopFlagChanged(cobraCmd, flagName) {
+		if !cobraCmd.Flags().Changed(flagName) {
 			continue
 		}
 		if err := rejectEmptyRequiredValue("--"+flagName, *hf.strVal,
@@ -593,12 +583,6 @@ func resolveBody(f *cmdutil.Factory, cobraCmd *cobra.Command, rt *operationRunti
 
 	if err := applyBodyFlags(cobraCmd, rt, base); err != nil {
 		return nil, err
-	}
-	if err := applyLoopProjectBody(cobraCmd, rt, base); err != nil {
-		return nil, cmdutil.WrapCLIError(err)
-	}
-	if err := applyTaskAssigneeBody(cobraCmd, f, rt, base); err != nil {
-		return nil, cmdutil.WrapCLIError(err)
 	}
 	if err := applyGeneratedIdempotencyKey(rt, base); err != nil {
 		return nil, err
@@ -760,7 +744,7 @@ func missingVariantRequiredValue(value any) bool {
 // bare JSON integer — the wire contract stays integer while the flag is text.
 func applyBodyFlags(cobraCmd *cobra.Command, rt *operationRuntime, base map[string]any) *output.ExitError {
 	for flagName, bf := range rt.bodyFlags {
-		if !loopFlagChanged(cobraCmd, flagName) {
+		if !cobraCmd.Flags().Changed(flagName) {
 			if _, supplied := base[bf.apiName]; !supplied && bf.boolDefault != nil {
 				base[bf.apiName] = *bf.boolDefault
 			}
@@ -1774,69 +1758,4 @@ func rawValueAtPath(body []byte, path string) (raw json.RawMessage, found bool, 
 		current = next
 	}
 	return current, true, nil
-}
-
-func normalizeWorkspaceMemberPagination(rt *operationRuntime, q url.Values) *output.ExitError {
-	if rt.detail.ID != "workspace.member.list" {
-		return nil
-	}
-	pageSize, err := workspaceMemberPageSize(q)
-	if err != nil {
-		return err
-	}
-	if !q.Has("offset") {
-		return nil
-	}
-	if q.Has("page") {
-		return output.ErrValidation("--offset and --page cannot be combined", "use one page selector")
-	}
-	offset, parseErr := strconv.Atoi(q.Get("offset"))
-	if parseErr != nil || offset < 0 || offset%pageSize != 0 {
-		return output.ErrValidation("--offset must be a nonnegative multiple of the page size", "use --page for arbitrary Project pages")
-	}
-	// Pin the page size used for the offset calculation on the wire too.
-	if !q.Has("page_size") {
-		q.Set("page_size", strconv.Itoa(pageSize))
-	}
-	q.Set("page", strconv.Itoa(offset/pageSize+1))
-	q.Del("offset")
-	return nil
-}
-
-func workspaceMemberPageSize(q url.Values) (int, *output.ExitError) {
-	if q.Has("limit") && q.Has("page_size") {
-		return 0, output.ErrValidation("--limit and --page-size cannot be combined", "use one page-size selector")
-	}
-	pageSize := 50
-	if raw := q.Get("limit"); raw != "" {
-		value, err := strconv.Atoi(raw)
-		if err != nil || value < 1 || value > 200 {
-			return 0, output.ErrValidation("--limit must be between 1 and 200", "choose a valid Project member page size")
-		}
-		pageSize = value
-		q.Set("page_size", raw)
-		q.Del("limit")
-	} else if raw := q.Get("page_size"); raw != "" {
-		value, err := strconv.Atoi(raw)
-		if err != nil || value < 1 || value > 200 {
-			return 0, output.ErrValidation("--page-size must be between 1 and 200", "choose a valid Project member page size")
-		}
-		pageSize = value
-	}
-	return pageSize, nil
-}
-
-func bindWorkspacePathHeader(rt *operationRuntime, pathValues []string, headers map[string]string) map[string]string {
-	if !rt.pathFlagNames["workspace-id"] || findParam(rt.detail, "X-Workspace-ID", "header") == nil {
-		return headers
-	}
-	for i, name := range rt.pathParams {
-		if name == "workspace_id" {
-			if headers == nil {
-				headers = map[string]string{}
-			}
-			headers["X-Workspace-ID"] = pathValues[i]
-		}
-	}
-	return headers
 }

@@ -38,6 +38,11 @@ func TestLoopV2ReadCommands(t *testing.T) {
 			io.WriteString(w, `{"data":[{"workspace_id":"`+loopWorkspace+`"}],"pagination":{"page":1,"page_size":20,"total":1}}`)
 		case "/fleet/api/v2/cli/workspaces/" + loopWorkspace:
 			io.WriteString(w, `{"data":{"workspace_id":"`+loopWorkspace+`"}}`)
+		case "/fleet/api/v2/cli/workspaces/" + loopWorkspace + "/members":
+			if r.Header.Get("X-Workspace-ID") != "" || r.URL.RawQuery != "page=2&page_size=3" {
+				t.Errorf("member scope must come from the URL: %q %q", r.Header.Get("X-Workspace-ID"), r.URL.RawQuery)
+			}
+			io.WriteString(w, `{"data":[{"member_id":"owner-uid"}],"pagination":{"page":2,"page_size":3,"total":4}}`)
 		case "/fleet/api/v2/cli/tasks":
 			if r.Header.Get("X-Workspace-ID") != loopWorkspace || r.URL.RawQuery != "page=2&page_size=10" {
 				t.Errorf("unexpected task scope/query: %q %q", r.Header.Get("X-Workspace-ID"), r.URL.RawQuery)
@@ -59,6 +64,8 @@ func TestLoopV2ReadCommands(t *testing.T) {
 	}{
 		{"workspace list", []string{"loop", "workspace", "list"}, ".data[0].workspace_id", `"` + loopWorkspace + `"`},
 		{"workspace detail", []string{"loop", "workspace", "get", loopWorkspace}, ".data.workspace_id", `"` + loopWorkspace + `"`},
+		{"workspace members positional", []string{"loop", "workspace", "member", "list", loopWorkspace, "--page", "2", "--page-size", "3"}, ".data[0].member_id", `"owner-uid"`},
+		{"workspace members flag", []string{"loop", "workspace", "member", "list", "--workspace-id", loopWorkspace, "--page", "2", "--page-size", "3"}, ".data[0].member_id", `"owner-uid"`},
 		{"task list", []string{"loop", "task", "list", "--workspace-id", loopWorkspace, "--page", "2", "--page-size", "10"}, "[.data[0].task_id,._pagination.page]", `["` + loopTask + `",2]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -277,22 +284,24 @@ func TestLoopV2OperationScope(t *testing.T) {
 	}
 }
 
-func TestLoopV2LegacyCommandInputs(t *testing.T) {
+func TestLoopV2DeclaredCommandInputs(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, path, query, body string
 		args                            []string
 	}{
 		{"project create", "POST", "/projects", "", `{"title":"fixture","description":"details","status":"planned","priority":"high"}`, []string{"project", "create", "--title", "fixture", "--description", "details", "--status", "planned", "--priority", "high"}},
 		{"project update", "PATCH", "/projects/" + loopTask, "", `{"title":"fixture"}`, []string{"project", "update", loopTask, "--title", "fixture"}},
-		{"resource add alias", "POST", "/projects/" + loopTask + "/resources", "", `{"resource_type":"github_repo","resource_ref":{"url":"https://github.com/example/fixture"}}`, []string{"project", "resource", "add", loopTask, "--type", "github_repo", "--ref", `{"url":"https://github.com/example/fixture"}`}},
-		{"resource remove alias", "DELETE", "/projects/" + loopTask + "/resources/" + loopTask, "", `null`, []string{"project", "resource", "remove", loopTask, loopTask}},
+		{"resource create", "POST", "/projects/" + loopTask + "/resources", "", `{"resource_type":"github_repo","resource_ref":{"url":"https://github.com/example/fixture"}}`, []string{"project", "resource", "create", loopTask, "--type", "github_repo", "--data", `{"resource_ref":{"url":"https://github.com/example/fixture"}}`}},
+		{"resource delete", "DELETE", "/projects/" + loopTask + "/resources/" + loopTask, "", `null`, []string{"project", "resource", "delete", loopTask, loopTask}},
 		{"project search positional", "GET", "/projects/_search", "q=fixture", `null`, []string{"project", "search", "fixture"}},
 		{"task search positional", "GET", "/tasks/_search", "q=fixture", `null`, []string{"task", "search", "fixture"}},
-		{"task group filters", "GET", "/tasks/_grouped", "group_by=assignee&project_id=" + loopTask + "&status=todo", `null`, []string{"task", "group", "--group-by", "assignee", "--project", loopTask, "--status", "todo"}},
-		{"task create optional fields", "POST", "/tasks", "", `{"title":"fixture","status":"todo","project_id":"` + loopTask + `","due_date":"2026-11-18"}`, []string{"task", "create", "--title", "fixture", "--status", "todo", "--project", loopTask, "--due-date", "2026-11-18"}},
-		{"task clear project", "PATCH", "/tasks/" + loopTask, "", `{"project_id":null,"handoff_note":"handoff","suppress_run":true}`, []string{"task", "update", loopTask, "--project", "", "--handoff-note", "handoff", "--suppress-run"}},
+		{"task group filters", "GET", "/tasks/_grouped", "group_by=assignee&project_id=" + loopTask + "&status=todo", `null`, []string{"task", "group", "--group-by", "assignee", "--project-id", loopTask, "--status", "todo"}},
+		{"task create optional fields", "POST", "/tasks", "", `{"title":"fixture","status":"todo","project_id":"` + loopTask + `","due_date":"2026-11-18"}`, []string{"task", "create", "--title", "fixture", "--status", "todo", "--project-id", loopTask, "--due-date", "2026-11-18"}},
+		{"task clear project", "PATCH", "/tasks/" + loopTask, "", `{"project_id":null,"handoff_note":"handoff","suppress_run":true}`, []string{"task", "update", loopTask, "--data", `{"project_id":null}`, "--handoff-note", "handoff", "--suppress-run"}},
 		{"task member flag", "POST", "/tasks", "", `{"title":"fixture","assignee_type":"member","assignee_octo_uid":"owner-uid"}`, []string{"task", "create", "--title", "fixture", "--assignee-type", "member", "--assignee-member-id", "owner-uid"}},
-		{"task assign alias", "PATCH", "/tasks/" + loopTask, "", `{"assignee_id":null,"assignee_type":null}`, []string{"task", "assign", loopTask, "--unassign"}},
+		{"task expert ID", "PATCH", "/tasks/" + loopTask, "", `{"assignee_id":"` + loopTask + `","assignee_type":"expert"}`, []string{"task", "update", loopTask, "--assignee-type", "expert", "--assignee-id", loopTask}},
+		{"task clear assignee", "PATCH", "/tasks/" + loopTask, "", `{"assignee_id":null,"assignee_type":null}`, []string{"task", "update", loopTask, "--data", `{"assignee_id":null,"assignee_type":null}`}},
+		{"task assignee filter", "GET", "/tasks", "assignee_id=" + loopTask + "&assignee_types=expert", `null`, []string{"task", "list", "--assignee-id", loopTask, "--assignee-types", "expert"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var requests atomic.Int32
@@ -330,8 +339,48 @@ func TestLoopV2LegacyCommandInputs(t *testing.T) {
 				t.Fatal(err)
 			}
 			if requests.Load() != 1 {
-				t.Fatalf("requests=%d", requests.Load())
+				t.Fatalf("command sent %d requests; expected exactly one without roster lookups", requests.Load())
 			}
 		})
+	}
+}
+
+func TestLoopV2UnsupportedCompatibilityInputs(t *testing.T) {
+	t.Setenv(config.EnvAPIBaseURL, "http://127.0.0.1:1")
+	t.Setenv(config.EnvToken, phaseOneToken)
+	for _, args := range [][]string{
+		{"task", "assign", loopTask, "--unassign"},
+		{"project", "resource", "add", loopTask},
+		{"project", "resource", "remove", loopTask, loopTask},
+		{"task", "create", "--title", "fixture", "--project", loopTask},
+		{"task", "create", "--title", "fixture", "--assignee", "fixture"},
+		{"task", "create", "--title", "fixture", "--assignee-octo-uid", "owner-uid"},
+		{"project", "resource", "create", loopTask, "--type", "github_repo", "--ref", `{"url":"https://github.com/example/fixture"}`},
+		{"workspace", "member", "list", loopWorkspace, "--offset", "50"},
+		{"workspace", "member", "list", loopWorkspace, "--limit", "50"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			command := append([]string{"loop"}, args...)
+			if args[0] != "workspace" {
+				command = append(command, "--workspace-id", loopWorkspace)
+			}
+			command = append(command, "--dry-run")
+			_, _, err := runLoopV2Command(t, command...)
+			exit := output.AsExitError(cmdutil.WrapCLIError(err))
+			if err == nil || (!strings.Contains(err.Error(), "unknown") && (exit == nil || exit.Code != "INVALID_FLAG")) {
+				t.Fatalf("expected a rejected command or flag, got %v", err)
+			}
+		})
+	}
+}
+
+func TestLoopV2ProjectLeadSelectors(t *testing.T) {
+	t.Setenv(config.EnvAPIBaseURL, "http://127.0.0.1:1")
+	t.Setenv(config.EnvToken, phaseOneToken)
+	_, _, err := runLoopV2Command(t, "loop", "project", "create", "--workspace-id", loopWorkspace,
+		"--title", "fixture", "--lead-id", loopTask, "--lead-member-id", "owner-uid", "--dry-run")
+	exit := output.AsExitError(cmdutil.WrapCLIError(err))
+	if exit == nil || exit.Type != "validation" {
+		t.Fatalf("expected mutually exclusive lead selector validation, got %v", err)
 	}
 }

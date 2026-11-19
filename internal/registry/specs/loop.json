@@ -2031,7 +2031,7 @@
                   "type": "integer"
                 },
                 "resource_ref": {
-                  "description": "Complete resource_ref object: github_repo needs url and optional default_branch_hint; local_directory needs absolute local_path and daemon_id, with optional label. Use --data or --ref JSON.",
+                  "description": "Complete resource_ref object: github_repo needs url and optional default_branch_hint; local_directory needs absolute local_path and daemon_id, with optional label. Supply resource_ref through --data JSON.",
                   "minProperties": 1,
                   "type": "object"
                 },
@@ -2090,7 +2090,7 @@
             "type": "integer"
           },
           "resource_ref": {
-            "description": "Complete resource_ref object: github_repo needs url and optional default_branch_hint; local_directory needs absolute local_path and daemon_id, with optional label. Use --data or --ref JSON.",
+            "description": "Complete resource_ref object: github_repo needs url and optional default_branch_hint; local_directory needs absolute local_path and daemon_id, with optional label. Supply resource_ref through --data JSON.",
             "minProperties": 1,
             "type": "object"
           },
@@ -2126,7 +2126,7 @@
             "type": "integer"
           },
           "resource_ref": {
-            "description": "Complete resource_ref object: github_repo needs url and optional default_branch_hint; local_directory needs absolute local_path and daemon_id, with optional label. Use --data or --ref JSON.",
+            "description": "Complete resource_ref object: github_repo needs url and optional default_branch_hint; local_directory needs absolute local_path and daemon_id, with optional label. Supply resource_ref through --data JSON.",
             "minProperties": 1,
             "type": "object"
           }
@@ -2748,7 +2748,7 @@
             "x-octo-flag": "assignee-member-id"
           },
           "assignee_type": {
-            "description": "Public assignee type. Use with --assignee-id or --assignee-member-id; to clear, pass --data '{\"assignee_type\":null,\"assignee_id\":null}' or use task assign --unassign.",
+            "description": "Public assignee type. Use with --assignee-id or --assignee-member-id; to clear, pass --data '{\"assignee_type\":null,\"assignee_id\":null}'.",
             "enum": [
               "expert",
               "expert_team",
@@ -7758,7 +7758,22 @@
         "x-octo-required-actions": [
           "loop.project:write"
         ],
-        "x-octo-retry": "never"
+        "x-octo-retry": "never",
+        "x-octo-body-variants": [
+          {
+            "name": "fleet_lead",
+            "forbidden": [
+              "lead_octo_uid"
+            ]
+          },
+          {
+            "name": "project_member_lead",
+            "forbidden": [
+              "lead_id"
+            ]
+          }
+        ],
+        "x-octo-body-variants-hint": "--lead-id and --lead-member-id cannot be combined; use one lead identity field"
       }
     },
     "/fleet/api/v2/cli/projects/_search": {
@@ -8072,7 +8087,22 @@
         "x-octo-required-actions": [
           "loop.project:write"
         ],
-        "x-octo-retry": "never"
+        "x-octo-retry": "never",
+        "x-octo-body-variants": [
+          {
+            "name": "fleet_lead",
+            "forbidden": [
+              "lead_octo_uid"
+            ]
+          },
+          {
+            "name": "project_member_lead",
+            "forbidden": [
+              "lead_id"
+            ]
+          }
+        ],
+        "x-octo-body-variants-hint": "--lead-id and --lead-member-id cannot be combined; use one lead identity field"
       }
     },
     "/fleet/api/v2/cli/projects/{project_id}/resources": {
@@ -13422,17 +13452,6 @@
               "format": "uuid",
               "type": "string"
             }
-          },
-          {
-            "description": "Preferred stable workspace UUID. For this operation it takes precedence over slug aliases; X-Workspace-Slug remains a compatibility fallback.",
-            "in": "header",
-            "name": "X-Workspace-ID",
-            "required": false,
-            "schema": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "x-octo-flag": "workspace-id"
           }
         ],
         "responses": {
@@ -13514,36 +13533,6 @@
               "type": "string"
             },
             "x-octo-flag": "workspace-id"
-          },
-          {
-            "description": "Preferred stable workspace UUID. For this operation it takes precedence over slug aliases; X-Workspace-Slug remains a compatibility fallback.",
-            "in": "header",
-            "name": "X-Workspace-ID",
-            "required": false,
-            "schema": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "x-octo-flag": "workspace-id"
-          },
-          {
-            "description": "Compatibility alias for --page-size; translated before the request.",
-            "in": "query",
-            "name": "limit",
-            "schema": {
-              "maximum": 200,
-              "minimum": 1,
-              "type": "integer"
-            }
-          },
-          {
-            "description": "Compatibility offset; must be a multiple of the effective page size (default 50) and cannot be combined with --page. The CLI sends that page size with the translated page.",
-            "in": "query",
-            "name": "offset",
-            "schema": {
-              "minimum": 0,
-              "type": "integer"
-            }
           }
         ],
         "responses": {
