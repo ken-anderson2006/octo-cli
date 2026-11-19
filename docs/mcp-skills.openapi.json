@@ -1,0 +1,77 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Octo CLI bundled skills",
+    "version": "1.0.0"
+  },
+  "servers": [{ "url": "/v1" }],
+  "paths": {
+    "/skills": {
+      "get": {
+        "operationId": "skill.list",
+        "summary": "Read all enabled skills embedded in this build",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Complete Markdown documents, sorted by skill name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["data"],
+                  "properties": { "data": { "$ref": "#/components/schemas/SkillsResult" } }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The service could not read the complete collection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "required": ["code", "message", "details", "hint"],
+                      "properties": {
+                        "code": { "type": "string", "const": "INTERNAL_ERROR" },
+                        "message": { "type": "string" },
+                        "details": { "type": "object" },
+                        "hint": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SkillsResult": {
+        "type": "object",
+        "required": ["skills"],
+        "properties": {
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "description", "content", "references"],
+              "properties": {
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "content": { "type": "string" },
+                "references": { "type": "object", "additionalProperties": { "type": "string" } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

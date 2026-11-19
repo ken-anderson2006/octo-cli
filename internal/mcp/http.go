@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Mininglamp-OSS/octo-cli/internal/credential"
+	"github.com/Mininglamp-OSS/octo-cli/skills"
 )
 
 const (
@@ -38,9 +40,10 @@ func ServeHTTP(ctx context.Context, listener net.Listener, version string, optio
 	// deadlines and client disconnect handling until the grace period expires.
 	requestBase, cancelRequests := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelRequests()
-	transport := &httpTransport{buildVersion: version, execute: execute}
+	transport := &httpTransport{buildVersion: version, execute: execute, fsys: skills.FS}
 	mux := http.NewServeMux()
 	mux.Handle(httpEndpointPath, transport)
+	mux.HandleFunc("GET /v1/skills", transport.publicSkills)
 	mux.HandleFunc("GET /readyz", transport.ready)
 	mux.HandleFunc("GET /metrics", transport.metrics)
 	server := &http.Server{
@@ -86,8 +89,23 @@ func httpServeError(err error) error {
 type httpTransport struct {
 	buildVersion string
 	execute      func(context.Context, string, []string) ExecResult
+	fsys         fs.FS
 	draining     atomic.Bool
 	inflight     atomic.Int64
+}
+
+// publicSkills serves the build's embedded Markdown (OpenAPI skill.list).
+func (h *httpTransport) publicSkills(w http.ResponseWriter, _ *http.Request) {
+	result, err := skills.LoadAll(h.fsys)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{ //nolint:errcheck // the client may close the connection
+			"code": "INTERNAL_ERROR", "message": "Failed to load skills", "details": struct{}{}, "hint": "",
+		}})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]skills.Result{"data": result}) //nolint:errcheck // the client may close the connection
 }
 
 func (h *httpTransport) ready(w http.ResponseWriter, _ *http.Request) {
@@ -207,21 +225,23 @@ func (h *httpTransport) dispatch(ctx context.Context, msg *request, version, bea
 	case "ping":
 		return result(msg.ID, struct{}{})
 	case "tools/list":
-		return result(msg.ID, listTools())
+		return result(msg.ID, listTools(version))
 	case "tools/call":
-		args, reply := parseToolCall(msg)
+		call, reply := parseToolCall(msg)
 		if reply != nil {
 			return reply
 		}
 		ctx, cancel := context.WithTimeout(ctx, httpCallTimeout)
 		defer cancel()
-		h.inflight.Add(1)
-		defer h.inflight.Add(-1)
-		executed := h.execute(ctx, bearer, args)
+		reply = call.run(ctx, msg.ID, version, h.fsys, func(ctx context.Context, args []string) ExecResult {
+			h.inflight.Add(1)
+			defer h.inflight.Add(-1)
+			return h.execute(ctx, bearer, args)
+		})
 		if ctx.Err() != nil {
 			return failure(msg.ID, -32000, "Octo CLI request timed out or was cancelled")
 		}
-		return execResponse(msg.ID, version, executed)
+		return reply
 	default:
 		return failure(msg.ID, -32601, "Method not found")
 	}

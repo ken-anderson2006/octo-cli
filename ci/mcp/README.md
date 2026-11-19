@@ -49,14 +49,17 @@ shared qcloud Ingress `test-ingress`, its CLB and TLS certificate, and the
 `dmwork-web-develop` Web gateway. The MCP CI release publishes the
 Deployment and ClusterIP Service in `dmwork-test`.
 
-To enable the endpoint, the Web gateway owner adds the MCP location inside
+To enable both `/mcp` and `/v1/skills`, the Web gateway owner adds the two
+exact-match locations inside
 the existing `server` block in `data.default.conf` of the
-`dmwork-web-nginx-develop` ConfigMap. The route uses the server's Kubernetes
+`dmwork-web-nginx-develop` ConfigMap. Both routes use the server's Kubernetes
 DNS resolver to look up the MCP Service when a request arrives. Roll out
 `dmwork-web-develop` to load the updated template from its ConfigMap
-subPath mount. [MCP Nginx location](test-web-nginx.conf)
+subPath mount. [MCP Nginx locations](test-web-nginx.conf)
 
-Manage the production HTTPS route for `/mcp` through the production gateway.
+Manage the production HTTPS routes for both paths through the production gateway.
+After rollout, an anonymous `GET /v1/skills` should return HTTP 200 and the
+bundled documents under `data.skills`. Every request to `/mcp` requires a Bearer.
 
 Preserve the caller's Octo `Authorization` header at the HTTPS ingress. The
 Octo gateway authenticates the forwarded token on business calls. Keep

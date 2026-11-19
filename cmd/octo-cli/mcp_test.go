@@ -45,7 +45,7 @@ func TestMain_MCP(t *testing.T) {
 	t.Cleanup(gateway.Close)
 
 	cli := startMCP(t, nil, "OCTO_TOKEN="+token, "OCTO_API_BASE_URL="+gateway.URL)
-	cli.discover()
+	cli.discover("2025-11-25")
 
 	call := cli.call(2, "api", "POST", "/v1/items", "--data", requestBody, "--verbose")
 	if call.IsError || call.Output.ExitCode != 0 || !strings.Contains(call.Output.Stdout, "9007199254740993") ||
@@ -107,7 +107,7 @@ func TestMain_MCP(t *testing.T) {
 
 func TestMain_MCPDiscoveryWithoutCredential(t *testing.T) {
 	cli := startMCP(t, nil, "OCTO_FORMAT=invalid-format")
-	cli.discover()
+	cli.discover("2025-11-25")
 	call := cli.call(2, "api", "GET", "/v1/items", "--format", "json")
 	if !call.IsError || call.Output.ExitCode != 3 || !strings.Contains(call.Output.Stderr, "auth_error") {
 		t.Fatalf("expected tool-level authentication error: %+v", call.Output)
@@ -143,7 +143,7 @@ func TestMain_MCPCredentialFileWithProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	cli := startMCP(t, []string{"--profile", "agent"}, "OCTO_CONFIG_DIR="+configDir, "OCTO_TOKEN_FILE="+tokenFile)
-	cli.discover()
+	cli.discover("2025-11-25")
 	probe := cli.call(2, "api", "GET", "/v1/items", "--dry-run")
 	for _, want := range []string{"https://octo.example.invalid/v1/items", "fixture-space", "agent", "env:OCTO_TOKEN_FILE"} {
 		if !strings.Contains(probe.Output.Stdout, want) {
@@ -172,6 +172,11 @@ func startMCP(t *testing.T, launchFlags []string, env ...string) *mcpProcess {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
+	return startMCPBinary(t, bin, launchFlags, env...)
+}
+
+func startMCPBinary(t *testing.T, bin string, launchFlags []string, env ...string) *mcpProcess {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
 	cmd := exec.CommandContext(ctx, bin, append(launchFlags, "mcp", "serve")...)
@@ -217,27 +222,57 @@ type mcpExecReply struct {
 	} `json:"structuredContent"`
 }
 
-func (p *mcpProcess) discover() {
+func initializeMCP(version string) string {
+	return `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":` + strconv.Quote(version) + `,"capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`
+}
+
+func (p *mcpProcess) discover(version string) {
 	p.t.Helper()
-	p.send(`{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`)
-	init := p.receive(`"init"`)
-	if init.Error != nil || !bytes.Contains(init.Result, []byte(`"protocolVersion":"2025-11-25"`)) {
-		p.t.Fatalf("initialize failed: %+v", init)
-	}
+	p.send(initializeMCP(version))
+	assertMCPVersion(p.t, p.receive("1"), version)
 	p.send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 	p.send(`{"jsonrpc":"2.0","id":9007199254740993,"method":"tools/list"}`)
+	assertMCPTools(p.t, p.receive("9007199254740993"), version)
+}
+
+func assertMCPVersion(t *testing.T, reply mcpReply, version string) {
+	t.Helper()
+	var init struct{ ProtocolVersion string }
+	if err := json.Unmarshal(reply.Result, &init); err != nil || reply.Error != nil || init.ProtocolVersion != version {
+		t.Fatalf("initialize = %s, error = %v, want version %s", reply.Result, reply.Error, version)
+	}
+}
+
+func assertMCPTools(t *testing.T, reply mcpReply, version string) {
+	t.Helper()
 	var list struct {
 		Tools []struct {
 			Name        string
 			InputSchema struct {
 				Required []string
 			}
+			OutputSchema json.RawMessage
+			Annotations  json.RawMessage
 		}
 	}
-	if err := json.Unmarshal(p.receive("9007199254740993").Result, &list); err != nil ||
-		len(list.Tools) != 1 || list.Tools[0].Name != "exec" ||
-		len(list.Tools[0].InputSchema.Required) != 1 || list.Tools[0].InputSchema.Required[0] != "args" {
-		p.t.Fatalf("tools/list = %+v, error = %v, want only exec with required args", list, err)
+	if err := json.Unmarshal(reply.Result, &list); err != nil || reply.Error != nil {
+		t.Fatalf("tools/list = %s, error = %v (%v)", reply.Result, reply.Error, err)
+	}
+	var foundExec, foundSkills bool
+	for _, tool := range list.Tools {
+		switch tool.Name {
+		case "exec":
+			foundExec = len(tool.InputSchema.Required) == 1 && tool.InputSchema.Required[0] == "args"
+		case "skills":
+			foundSkills = len(tool.InputSchema.Required) == 0
+			if (tool.OutputSchema != nil) != (version >= "2025-06-18") ||
+				(tool.Annotations != nil) != (version >= "2025-03-26") {
+				t.Fatalf("skills tool has unexpected schema or annotations for %s: %+v", version, tool)
+			}
+		}
+	}
+	if !foundExec || !foundSkills {
+		t.Fatalf("tools/list = %+v, want exec with required args and skills without required arguments", list)
 	}
 }
 

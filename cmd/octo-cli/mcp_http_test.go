@@ -68,7 +68,7 @@ func TestMain_MCPHTTP(t *testing.T) {
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	request := func(method, token, version, origin, message string) (code int, body []byte) {
+	request := func(t *testing.T, method, token, version, origin, message string) (code int, body []byte) {
 		t.Helper()
 		req, err := http.NewRequestWithContext(ctx, method, addr, strings.NewReader(message))
 		if err != nil {
@@ -98,31 +98,56 @@ func TestMain_MCPHTTP(t *testing.T) {
 	}
 
 	const version = "2025-11-25"
-	const initialize = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"http-test","version":"1"}}}`
-	if code, body := request(http.MethodPost, "", "", "", initialize); code != http.StatusUnauthorized {
+	initialize := initializeMCP(version)
+	if code, body := request(t, http.MethodPost, "", "", "", initialize); code != http.StatusUnauthorized {
 		t.Fatalf("MCP request should require an Octo Bearer, got %d %s", code, body)
 	}
-	if code, body := request(http.MethodPost, firstToken, "", "https://fixture.example.invalid", initialize); code != http.StatusForbidden {
+	if code, body := request(t, http.MethodPost, firstToken, "", "https://fixture.example.invalid", initialize); code != http.StatusForbidden {
 		t.Fatalf("request with a browser origin should be refused, got %d %s", code, body)
 	}
-	if code, body := request(http.MethodPost, firstToken, "", "", initialize); code != http.StatusOK ||
+	if code, body := request(t, http.MethodPost, firstToken, "", "", initialize); code != http.StatusOK ||
 		!strings.Contains(string(body), `"protocolVersion":"2025-11-25"`) {
 		t.Fatalf("initialization failed: %d %s", code, body)
 	}
-	if code, body := request(http.MethodPost, firstToken, version, "", `{"jsonrpc":"2.0","method":"notifications/initialized"}`); code != http.StatusAccepted || len(body) != 0 {
+	if code, body := request(t, http.MethodPost, firstToken, version, "", `{"jsonrpc":"2.0","method":"notifications/initialized"}`); code != http.StatusAccepted || len(body) != 0 {
 		t.Fatalf("expected empty notification acknowledgment, got %d %s", code, body)
 	}
-	if code, body := request(http.MethodGet, firstToken, version, "", ""); code != http.StatusMethodNotAllowed {
+	if code, body := request(t, http.MethodGet, firstToken, version, "", ""); code != http.StatusMethodNotAllowed {
 		t.Fatalf("standalone SSE stream returned %d %s", code, body)
 	}
 	const list = `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`
-	if code, body := request(http.MethodPost, firstToken, "invalid", "", list); code != http.StatusBadRequest {
+	if code, body := request(t, http.MethodPost, firstToken, "invalid", "", list); code != http.StatusBadRequest {
 		t.Fatalf("unsupported protocol should return 400, got %d %s", code, body)
 	}
-	if code, body := request(http.MethodPost, firstToken, version, "", list); code != http.StatusOK ||
-		!strings.Contains(string(body), `"name":"exec"`) {
-		t.Fatalf("tool discovery failed: %d %s", code, body)
-	}
+	t.Run("bundled skills", func(t *testing.T) {
+		want := readPublicSkills(t, client, strings.TrimSuffix(addr, "/mcp")+"/v1/skills")
+		const callSkills = `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"skills","arguments":{}}}`
+		for _, protocol := range []string{"2024-11-05", "2025-03-26", "2025-06-18", version} {
+			t.Run(protocol, func(t *testing.T) {
+				cli := startMCPBinary(t, bin, nil)
+				cli.discover(protocol)
+				cli.send(callSkills)
+				assertMCPSkills(t, cli.receive("3"), protocol, want)
+				cli.close()
+
+				if protocol == "2024-11-05" { // Only stdio supports this version.
+					return
+				}
+				post := func(message string) mcpReply {
+					t.Helper()
+					code, body := request(t, http.MethodPost, firstToken, protocol, "", message)
+					var reply mcpReply
+					if code != http.StatusOK || json.Unmarshal(body, &reply) != nil {
+						t.Fatalf("MCP request failed: %d %s", code, body)
+					}
+					return reply
+				}
+				assertMCPVersion(t, post(initializeMCP(protocol)), protocol)
+				assertMCPTools(t, post(list), protocol)
+				assertMCPSkills(t, post(callSkills), protocol, want)
+			})
+		}
+	})
 	const call = `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"exec","arguments":{"args":["server","identity","get","--jq",".data.user_id"]}}}`
 	for _, tc := range []struct {
 		token string
@@ -131,7 +156,7 @@ func TestMain_MCPHTTP(t *testing.T) {
 		{firstToken, "\"fixture-first\"\n"},
 		{secondToken, "\"fixture-second\"\n"},
 	} {
-		code, body := request(http.MethodPost, tc.token, version, "", call)
+		code, body := request(t, http.MethodPost, tc.token, version, "", call)
 		var reply mcpReply
 		var result mcpExecReply
 		if code != http.StatusOK || json.Unmarshal(body, &reply) != nil || string(reply.ID) != "3" ||
@@ -140,7 +165,7 @@ func TestMain_MCPHTTP(t *testing.T) {
 			t.Fatalf("expected the caller's identity, got %d %s", code, body)
 		}
 	}
-	code, body := request(http.MethodPost, "fixture_invalid_token", version, "", call)
+	code, body := request(t, http.MethodPost, "fixture_invalid_token", version, "", call)
 	var denied mcpReply
 	var deniedResult mcpExecReply
 	if code != http.StatusOK || json.Unmarshal(body, &denied) != nil ||
