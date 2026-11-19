@@ -353,7 +353,7 @@ func (h *PermissionHost) handleControl(ctx context.Context, owner string, f perm
 	p := f.Payload
 	switch f.Method {
 	case "register_ingress":
-		if !permission.Fields(p, "key", "delivery_reference", "stream", "payload_sha256") {
+		if !registerIngressPayloadFieldsValid(p) {
 			return controlUnavailable(f, "predicate_unsupported", false)
 		}
 		keyObject, ok := p["key"].(map[string]any)
@@ -362,32 +362,86 @@ func (h *PermissionHost) handleControl(ctx context.Context, owner string, f perm
 		if !ok || !permission.Fields(keyObject, "origin", "bot_uid", "space_id") || keyErr != nil || json.Unmarshal(keyBytes, &key) != nil || key.Origin != h.config.Origin || key.BotUID != h.config.BotUID || !key.Valid() {
 			return controlUnavailable(f, "authority_conflict", false)
 		}
-		observed, err := h.native.Resolve(ctx, key, "admit", []string{controlString(p, "delivery_reference")})
+		payloadSHA := controlString(p, "payload_sha256")
+		var liveReq *permission.LiveIngressRequest
+		if rawLive, hasLive := p["live_ingress"]; hasLive {
+			parsedLive, ok := parseControlLiveIngress(rawLive, payloadSHA)
+			if !ok {
+				return controlUnavailable(f, "authority_conflict", false)
+			}
+			liveReq = &parsedLive
+		}
+		deliveryRef := controlString(p, "delivery_reference")
+		if deliveryRef == "" {
+			if liveReq == nil {
+				return controlUnavailable(f, "predicate_unsupported", false)
+			}
+			binding, err := h.native.BindLiveIngress(ctx, key, *liveReq)
+			if err != nil {
+				return controlError(f, err)
+			}
+			deliveryRef = binding.DeliveryReference
+		} else if liveReq != nil {
+			expectedChannel := liveReq.ChannelID
+			if liveReq.ChannelType == 1 {
+				canonicalPair, err := permission.CanonicalDMPairID(key.BotUID, liveReq.FromUID)
+				if err != nil {
+					return controlUnavailable(f, "authority_conflict", false)
+				}
+				expectedChannel = canonicalPair
+			}
+			expectedRef, err := permission.EncodeLiveIngressReference("l1", liveReq.ChannelType, expectedChannel, liveReq.MessageID, liveReq.MessageSeq, liveReq.FromUID, liveReq.ObservedPayloadSHA256)
+			if err != nil || deliveryRef != expectedRef {
+				return controlUnavailable(f, "authority_conflict", false)
+			}
+		}
+		if rawProv, hasProv := p["provenance"]; hasProv {
+			prov := controlString(p, "provenance")
+			if _, ok := rawProv.(string); !ok || prov == "" {
+				return controlUnavailable(f, "predicate_unsupported", false)
+			}
+			if strings.HasPrefix(deliveryRef, permission.LiveIngressDeliveryPrefix) {
+				if prov != permission.LiveChannelACLProvenance && prov != permission.LiveIngressContractVersion {
+					return controlUnavailable(f, "authority_conflict", false)
+				}
+			}
+		}
+		observed, err := h.native.Resolve(ctx, key, "admit", []string{deliveryRef})
 		if err != nil {
 			return controlError(f, err)
 		}
 		header := observed[0].Header()
 		stream, streamErr := permission.PrivateJSON(p["stream"])
 		actual, actualErr := permission.PrivateJSON(header.Delivery)
-		if streamErr != nil || actualErr != nil || !bytes.Equal(stream, actual) || p["payload_sha256"] != header.PayloadSHA256 {
+		if streamErr != nil || actualErr != nil || !bytes.Equal(stream, actual) || payloadSHA != header.PayloadSHA256 {
 			return controlUnavailable(f, "authority_conflict", false)
 		}
+		if rawHeader, hasHeader := p["header"]; hasHeader {
+			suppliedHeaderBytes, err1 := permission.PrivateJSON(rawHeader)
+			resolvedHeaderBytes, err2 := permission.PrivateJSON(header)
+			if err1 != nil || err2 != nil || !bytes.Equal(suppliedHeaderBytes, resolvedHeaderBytes) {
+				return controlUnavailable(f, "authority_conflict", false)
+			}
+		}
 		identity, identityErr := permission.PrivateJSON([]any{key, header.Delivery, header.MessageID, header.MessageVersion, header.PayloadSHA256})
-		if identityErr != nil {
-			return controlError(f, identityErr)
+		msgIdentity, msgIdentityErr := permission.PrivateJSON([]any{key, header.Delivery, header.MessageID, header.PayloadSHA256})
+		if identityErr != nil || msgIdentityErr != nil {
+			return controlError(f, permission.ErrUnavailable)
 		}
 		delivery := sha256.Sum256(identity)
+		msgDelivery := sha256.Sum256(msgIdentity)
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		if h.seenDeliveries[delivery] {
+		if h.seenDeliveries[delivery] || h.seenDeliveries[msgDelivery] {
 			return controlUnavailable(f, "authority_conflict", false)
 		}
 		// Handles are reclaimed below; replay tombstones are not. Until a real
 		// native no-redelivery fence exists, retain them and stop at the bound.
-		if len(h.seenDeliveries) >= 100000 {
+		if len(h.seenDeliveries)+2 > 100000 {
 			return controlUnavailable(f, "budget_exhausted", false)
 		}
 		h.seenDeliveries[delivery] = true
+		h.seenDeliveries[msgDelivery] = true
 		id := permission.NewID()
 		h.ingress[owner+":"+id] = &hostIngress{observation: observed[0]}
 		return controlOK(f, map[string]any{"ingress_id": id})
@@ -745,6 +799,71 @@ func (h *PermissionHost) handleControl(ctx context.Context, owner string, f perm
 	}
 }
 
+func registerIngressPayloadFieldsValid(p map[string]any) bool {
+	if p == nil {
+		return false
+	}
+	if _, hasKey := p["key"]; !hasKey {
+		return false
+	}
+	if _, hasStream := p["stream"]; !hasStream {
+		return false
+	}
+	if _, hasPayloadSHA := p["payload_sha256"]; !hasPayloadSHA {
+		return false
+	}
+	_, hasDeliveryRef := p["delivery_reference"]
+	_, hasLiveIngress := p["live_ingress"]
+	if !hasDeliveryRef && !hasLiveIngress {
+		return false
+	}
+	for k := range p {
+		switch k {
+		case "key", "delivery_reference", "live_ingress", "stream", "payload_sha256", "header", "provenance":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func parseControlLiveIngress(v any, expectedPayloadSHA string) (permission.LiveIngressRequest, bool) {
+	m, ok := v.(map[string]any)
+	if !ok || !permission.Fields(m, "channel_type", "channel_id", "message_id", "message_seq", "from_uid", "observed_payload_sha256") {
+		return permission.LiveIngressRequest{}, false
+	}
+	ctNum, ok := m["channel_type"].(json.Number)
+	if !ok {
+		return permission.LiveIngressRequest{}, false
+	}
+	ct64, err := ctNum.Int64()
+	if err != nil || (ct64 != 1 && ct64 != 2 && ct64 != 5) {
+		return permission.LiveIngressRequest{}, false
+	}
+	channelID := controlString(m, "channel_id")
+	messageID := controlString(m, "message_id")
+	messageSeq := controlString(m, "message_seq")
+	fromUID := controlString(m, "from_uid")
+	observedSHA := controlString(m, "observed_payload_sha256")
+	if !permission.ValidNativeID(channelID) || !permission.ValidNativeID(fromUID) || !controlHash(observedSHA) || observedSHA != expectedPayloadSHA {
+		return permission.LiveIngressRequest{}, false
+	}
+	if _, err := permission.U64(messageID); err != nil {
+		return permission.LiveIngressRequest{}, false
+	}
+	if _, err := permission.U64(messageSeq); err != nil {
+		return permission.LiveIngressRequest{}, false
+	}
+	return permission.LiveIngressRequest{
+		ChannelType:           int(ct64),
+		ChannelID:             channelID,
+		MessageID:             messageID,
+		MessageSeq:            messageSeq,
+		FromUID:               fromUID,
+		ObservedPayloadSHA256: observedSHA,
+	}, true
+}
+
 func parseContributorReferences(v any, minCount, maxCount int) ([]string, bool) {
 	items, ok := v.([]any)
 	if !ok || len(items) < minCount || len(items) > maxCount {
@@ -755,6 +874,9 @@ func parseContributorReferences(v any, minCount, maxCount int) ([]string, bool) 
 	for i, item := range items {
 		s, ok := item.(string)
 		if !ok || s == "" || len(s) > 512 || seen[s] {
+			return nil, false
+		}
+		if strings.HasPrefix(s, permission.LiveIngressDeliveryPrefix) || strings.HasPrefix(s, permission.LiveIngressHeaderPrefix) {
 			return nil, false
 		}
 		seen[s] = true

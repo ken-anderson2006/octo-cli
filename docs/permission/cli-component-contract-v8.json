@@ -1,0 +1,89 @@
+{
+  "format": "permission-cli-component-handoff-v8",
+  "contract_version": "v2_async_ingress_separation",
+  "task": "XIN-2794",
+  "task_id": "229ad215-8526-4a04-8f5b-36f073f81a16",
+  "charter_task_id": "17e81670-5b49-461d-9509-7c22ca127939",
+  "owner_decisions": [
+    "2123326487372140544",
+    "2123331461770547200",
+    "2123331688342654976"
+  ],
+  "trigger_comment_id": "7f94cb39-8a10-4b12-9d6f-087c3c1e2210",
+  "supersedes": "cli-component-contract-v7.json",
+  "target": "chore/main-snapshot-20261029-mcp",
+  "base_sha": "f8d434b6318215948ebbf67feb11f6265dee11e5",
+  "previous_head_sha": "424942e82934a105ed011830d5a482cb0682bd49",
+  "parent_chain": [
+    "6b116ee532ab664e6b9380c5829f03dd7619f965",
+    "424942e82934a105ed011830d5a482cb0682bd49"
+  ],
+  "status": "XIN2794_V2_ASYNC_INGRESS_SEPARATION_DELIVERED_PRODUCTION_FAIL_CLOSED",
+  "catalog_digest": null,
+  "production_support_registries": {
+    "supportedPermissionReleases": [],
+    "supportedPermissionPackages": [],
+    "default_response_budgets": null
+  },
+  "async_ingress_separation_v2": {
+    "contract_version": "v2_async_ingress_separation",
+    "provenance": "live_channel_acl_v1",
+    "live_delivery_reference_prefix": "l1-",
+    "live_header_reference_prefix": "l2-",
+    "live_unpersisted_message_version": "live_unpersisted_v1",
+    "asynchronous_synchronization_preserved": true,
+    "synchronous_trigger_row_insert": false,
+    "retry_only_substitute": false,
+    "cli_trigger_row_dependency_inventory": {
+      "1_control_register_ingress": "Adapted in internal/mcp/permission_host.go and internal/permission/native_read.go: accepts l1-... live-ingress delivery references (or mints l1-... via NativeReader.BindLiveIngress when live_ingress is provided) as well as s1-... stored delivery references; cross-verifies canonical DM pair (<low>@<high> CRC32-IEEE), source kind/ID, message_id, sequence, author_uid, payload_sha256, and l2-... header reference; records both versioned and version-independent replay tombstones in seenDeliveries",
+      "2_control_admit_and_recheck": "Adapted in internal/permission/native_read.go: NativeReader.Recheck resolves g.original.reference once with purpose='admit' and reuses current[0] for any manifest.originals entry matching g.original, removing the duplicate purpose='contributor' query on the triggering message that previously failed with mirror_lag on unpersisted l1-... turns",
+      "3_control_resolve_contributors_and_bind_context": "Adapted in internal/mcp/permission_host.go and internal/permission/native_read.go: resolve_contributors and bind_context contributor_references reject unpersisted l1-/l2- tokens and enforce stored s1-... references resolved via purpose='contributor' in batches <=32; bind_context accepts l2-... NativeHeader for the live trigger in manifest.originals",
+      "4_action_and_reply_boundaries": "Adapted across open_relay, renew, BeginCall, RoundTrip/Execute, AdmitPageBytes, ConsumeBytes, ReadLocal, and Publish/PublishConnection (including message.send over HTTP and stdio --turn-relay): every boundary rechecks live l1-... turns via purpose='admit' against fresh current Server facts and policy/epoch/revocation watermarks with zero MySQL trigger-row reads"
+    },
+    "wire_contracts": {
+      "wire_contract_a_bind_live_ingress": "NativeReader.BindLiveIngress -> POST /v1/bot/permission-facts/v1/bind-delivery?space_id=<space_id> with operation='bind_live_ingress'",
+      "wire_contract_b_resolve_live_and_stored": "NativeReader.Resolve -> POST /v1/bot/permission-facts/v1?space_id=<space_id> with operation='resolve' (purpose in {'admit','reply'} for l1-...; purpose in {'admit','contributor','reply'} for s1-...)",
+      "wire_contract_c_evaluate_current_access": "NativeReader.EvaluateCurrentAccess -> POST /v1/bot/permission-facts/v1?space_id=<space_id> with operation='evaluate_current_access' (purpose in {'admit','reply'})"
+    }
+  },
+  "xin2858_isolated_test_catalog_repair_retained": {
+    "fixture_contract": "docs/permission/isolated-test-catalog-fixture-v1.json",
+    "catalog_mode": "isolated_test_v1",
+    "catalog_version": "octo-capabilities-v1-xin2748-v4",
+    "manifest_sha256": "ecc56c2ab0a2c520ab7e5203d2abab06671daf90c28d69f88fe1de8d154109fc",
+    "identity_index_sha256": "70cb8771d93bb38788418156029f59f35eb0031f1a8ee3b8d900eb18b673f798",
+    "semantic_sha256": "15c7ca2bf6df703979df529afbca6828f116b2463b1a818456edfad80bcad799"
+  },
+  "consumed_siblings": {
+    "server": {
+      "task": "XIN-2793",
+      "task_id": "6a92a547-cb82-4c3d-ac6c-8f5529028ba4",
+      "xin2858_baseline_head": "ab056abd74c3b61d7f86a238a16b3966f84cb723",
+      "early_contract_comment_id": "265d3a6c-902a-4710-a60f-d50e95f97f69",
+      "contract_version": "v2_async_ingress_separation",
+      "expected_server_handoff_path": "pkg/permissionbundle/contracts/handoff-v11.json",
+      "expected_server_manifest_path": "pkg/permissionbundle/contracts/contract-manifest-v11.json"
+    },
+    "endpoint": {
+      "task": "XIN-2795",
+      "task_id": "2f4a34e9-2be3-48ac-99f0-38a30f077acd",
+      "previous_head": "597f6a5c14233d565d4f569d93e957cf01bd1aea",
+      "async_ingress_head": "fa7896a845aaab16fdda926b4b406dfa47a3a3e4",
+      "async_ingress_tree": "c394c5a84d586a98b05cb73e2248e635354b5807",
+      "delivery_comment_id": "e9ce16e3-3ddd-45b9-9502-f619a7e20927",
+      "delivery_attachment_id": "01a1f306-ecbc-7822-ba6a-fc11e57e5dd7",
+      "handoff_path": "docs/permission-endpoint-handoff-v8.json",
+      "handoff_bytes": 6936,
+      "handoff_sha256": "dcabcc17e2d4c86f6801845d7f932870a1a176ff3fd8b3c0a42ddf45b16c8e7e"
+    }
+  },
+  "retained_contracts": {
+    "endpoint_abi_v3": "docs/permission/endpoint-abi-v3.json",
+    "endpoint_abi_v2": "docs/permission/endpoint-abi-v2.json",
+    "cli_component_contract_v7": "docs/permission/cli-component-contract-v7.json",
+    "contract_manifest_v7": "docs/permission/contract-manifest-v7.json",
+    "cli_component_contract_v6": "docs/permission/cli-component-contract-v6.json",
+    "contract_manifest_v6": "docs/permission/contract-manifest-v6.json",
+    "response_budget_ledger_v6": "docs/permission/response-budget-ledger-v6.json"
+  }
+}
