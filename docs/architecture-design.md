@@ -1,7 +1,7 @@
 # Octo CLI framework architecture
 
 `octo-cli` builds its service command tree from OpenAPI 3.x metadata at startup.
-This build registers Octo Server v2 operations under the `server` command.
+This build registers Octo Server v2 under `server` and Fleet v2 under `loop`.
 
 ```text
 OpenAPI JSON -> Registry -> Cobra commands

@@ -8,7 +8,8 @@
 builds a single Go binary with an extensible Cobra command tree, credential
 profiles, request previews and structured output for scripts and agents.
 
-This checkout embeds the Octo Server v2 registry under `octo-cli server`.
+This checkout embeds Octo Server v2 under `octo-cli server` and Fleet v2 under
+`octo-cli loop`.
 The framework commands are `api`, `schema`, `auth`, `config`, `skills`, `mcp`,
 `upgrade`, `version`, `help` and `completion`.
 
@@ -41,6 +42,70 @@ Use `server file upload --file <path>` for multipart uploads.
 `api <METHOD> <PATH>` accepts JSON query parameters through `--params` and a
 JSON body through `--data`. Use `--data @file.json` or `--data @-` to read a
 body from a file or stdin. Paths are relative to the configured gateway.
+
+## Loop commands (Fleet v2)
+
+Loop commands use the gateway's `/fleet/api/v2/cli` mount. Configure the gateway
+origin and an owner-bound business Token using the credential options below.
+The Token selects the Space. Workspace operations use an explicit UUID:
+
+```sh
+export OCTO_API_BASE_URL=http://localhost:28080
+export OCTO_TOKEN_FILE=/absolute/path/to/fleet.token
+./bin/octo-cli loop workspace list
+./bin/octo-cli loop task list --workspace-id "$workspace_id" --page-size 10
+./bin/octo-cli loop task create --workspace-id "$workspace_id" --title 'Example task'
+./bin/octo-cli loop task get "$task_id" --workspace-id "$workspace_id"
+./bin/octo-cli loop task update "$task_id" --workspace-id "$workspace_id" --status done
+./bin/octo-cli loop task delete "$task_id" --workspace-id "$workspace_id"
+```
+
+Use `loop --help`, resource help, or `schema --list loop` to discover the
+commands. Workspace-scoped commands require `--workspace-id`; Workspace detail
+commands take their Workspace UUID as a positional argument. `--data` remains
+available for complex bodies and explicit nulls. Task lists accept `--page` and
+`--page-size`; pagination is returned in `_pagination`.
+
+The embedded contract registers 126 Fleet operations, including tasks, comments,
+experts, expert teams, runtimes, projects, labels, attachments and autopilots.
+Writes do not automatically replay an uncertain request. File uploads use
+`--file`; binary downloads support `--output`. Environment values and declared
+signing secrets are masked in request previews and diagnostics.
+
+Fleet remains a separate service. The local gateway must forward `/fleet/api/`
+to Fleet; the local development environment can point that proxy at a native
+`go run ./cmd/server` process. Fleet still validates Token actions, owner,
+Project membership, resource ownership and lifecycle state.
+
+### Declarative Loop inputs
+
+The 126 operations are generated from `internal/registry/specs/loop.json` by the
+shared command engine. Use the declared command and field names:
+
+- Project resources use `project resource create` and `project resource delete`.
+- Project selection uses `--project-id` within the selected Workspace.
+- Assignment uses `task update` with `--assignee-type` and `--assignee-id`, or
+  `--assignee-member-id` for an Octo Project member. Commands send those fields
+  directly and do not scan member, expert or expert-team lists to infer a target.
+- Workspace members use `--page` and `--page-size`. Their Workspace UUID is in
+  the URL, supplied positionally or through `--workspace-id`.
+- Object values and explicit nulls use `--data`. Search terms remain positional
+  through the contract's `x-octo-positional` declaration.
+
+For example:
+
+```sh
+./bin/octo-cli loop workspace member list --workspace-id "$workspace_id" --page 1 --page-size 20
+./bin/octo-cli loop task update "$task_id" --workspace-id "$workspace_id" --assignee-type member --assignee-member-id "$member_id"
+./bin/octo-cli loop task update "$task_id" --workspace-id "$workspace_id" --data '{"assignee_type":null,"assignee_id":null}'
+./bin/octo-cli loop task update "$task_id" --workspace-id "$workspace_id" --data '{"project_id":null}'
+./bin/octo-cli loop project resource create "$project_id" --workspace-id "$workspace_id" --data '{"resource_type":"github_repo","resource_ref":{"url":"https://github.com/example/repo"}}'
+```
+
+Former convenience inputs such as `task assign`, resource `add/remove`,
+`--assignee`, `--project`, `--ref`, member `--limit/--offset`, and the old
+`*-octo-uid` flag aliases are not registered. Use the declared ID fields and
+JSON bodies above instead. Fleet continues to authorize the resulting requests.
 
 ## Configuration and credentials
 
