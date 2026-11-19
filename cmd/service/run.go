@@ -239,6 +239,11 @@ func validatePathArgs(rt *operationRuntime, values []string) *output.ExitError {
 			return err
 		}
 		p := findParam(rt.detail, name, "path")
+		if p != nil && rt.detail.StrictRequestSchema && p.Type == "string" {
+			if err := validatePathStringLength(p, values[i]); err != nil {
+				return err
+			}
+		}
 		if p == nil || p.Format != uint64Format {
 			continue
 		}
@@ -840,7 +845,7 @@ func (v bodySchemaValidator) validate(schema *registry.SchemaInfo, value any, pa
 	if err := checkUint64Field(schema, value, path, flagName); err != nil {
 		return err
 	}
-	if value == nil && (!v.enforcePublicAPIConstraints || schema.Type != "boolean") {
+	if value == nil && (schema.Nullable || !v.enforcePublicAPIConstraints || schema.Type != "boolean") {
 		// Enum constraints and non-nullable uint64 constraints have been checked
 		// above. Other optional fields preserve historical null passthrough.
 		return nil
@@ -1074,7 +1079,9 @@ func (v bodySchemaValidator) validateRequiredProperties(
 	var missing []string
 	for _, name := range schema.Required {
 		child, exists := obj[name]
-		if !exists || child == nil {
+		// JSON Schema required checks presence. An explicitly nullable field
+		// may carry null; its enum/composition constraints still run below.
+		if !exists || child == nil && !schema.Properties[name].Nullable {
 			missing = append(missing, joinBodyPath(path, name))
 		}
 	}
