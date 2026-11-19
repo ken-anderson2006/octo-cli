@@ -13,7 +13,7 @@ retries when a request outcome is uncertain. The spec marks storage
 credentials and signed URLs for diagnostic redaction.
 
 The six `sidebar.*` operations are an additive OCTO-457 contract from the
-[sidebar adapter in Octo Server](https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/codex/octo-457-sidebar-api/docs/openapi/v2.yaml).
+[sidebar adapter in Octo Server](https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/a1d9d21196cbf70e55fdf58e5b01f67a3295446c/docs/openapi/v2.yaml).
 They map to `server sidebar list`, `follow`, `mute`, `move`, `mark-read`, and
 `category delete`. Their schemas mirror the existing native sidebar payloads;
 their v2 authentication/actions and error envelope belong to the CLI adapter.

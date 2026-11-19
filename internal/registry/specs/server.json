@@ -2313,7 +2313,7 @@
         "x-octo-strict-request-schema": true,
         "x-octo-data-envelope": true,
         "x-octo-retry": "never",
-        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/codex/octo-457-sidebar-api/docs/openapi/v2.yaml"
+        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/a1d9d21196cbf70e55fdf58e5b01f67a3295446c/docs/openapi/v2.yaml"
       }
     },
     "/api/v2/cli/sidebar/conversations": {
@@ -2386,7 +2386,7 @@
         },
         "x-octo-strict-request-schema": true,
         "x-octo-data-envelope": true,
-        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/codex/octo-457-sidebar-api/docs/openapi/v2.yaml"
+        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/a1d9d21196cbf70e55fdf58e5b01f67a3295446c/docs/openapi/v2.yaml"
       }
     },
     "/api/v2/cli/sidebar/conversations/{channel_id}/_mark_read": {
@@ -2482,7 +2482,7 @@
         "x-octo-strict-request-schema": true,
         "x-octo-data-envelope": true,
         "x-octo-retry": "never",
-        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/codex/octo-457-sidebar-api/docs/openapi/v2.yaml"
+        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/a1d9d21196cbf70e55fdf58e5b01f67a3295446c/docs/openapi/v2.yaml"
       }
     },
     "/api/v2/cli/sidebar/conversations/{channel_id}/category": {
@@ -2581,7 +2581,7 @@
         "x-octo-strict-request-schema": true,
         "x-octo-data-envelope": true,
         "x-octo-retry": "never",
-        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/codex/octo-457-sidebar-api/docs/openapi/v2.yaml"
+        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/a1d9d21196cbf70e55fdf58e5b01f67a3295446c/docs/openapi/v2.yaml"
       }
     },
     "/api/v2/cli/sidebar/conversations/{channel_id}/follow": {
@@ -2675,7 +2675,7 @@
         "x-octo-strict-request-schema": true,
         "x-octo-data-envelope": true,
         "x-octo-retry": "never",
-        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/codex/octo-457-sidebar-api/docs/openapi/v2.yaml"
+        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/a1d9d21196cbf70e55fdf58e5b01f67a3295446c/docs/openapi/v2.yaml"
       }
     },
     "/api/v2/cli/sidebar/conversations/{channel_id}/mute": {
@@ -2769,7 +2769,7 @@
         "x-octo-strict-request-schema": true,
         "x-octo-data-envelope": true,
         "x-octo-retry": "never",
-        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/codex/octo-457-sidebar-api/docs/openapi/v2.yaml"
+        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/a1d9d21196cbf70e55fdf58e5b01f67a3295446c/docs/openapi/v2.yaml"
       }
     }
   },
@@ -6410,8 +6410,7 @@
       "SidebarEmptyResponse": {
         "properties": {
           "data": {
-            "additionalProperties": false,
-            "type": "object"
+            "$ref": "#/components/schemas/EmptyData"
           }
         },
         "required": [
