@@ -3,7 +3,7 @@
 ## Project
 
 `octo-cli` is a Go and Cobra framework for HTTP commands generated from
-OpenAPI 3.x specifications. The default build ships with an empty registry.
+OpenAPI 3.x specifications. The default build embeds Server v2 and Loop (Fleet v2) specifications.
 
 - `cmd` wires the command tree, shared flags, and framework commands.
 - `cmd/service` generates commands and executes operations from metadata.
