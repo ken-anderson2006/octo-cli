@@ -98,7 +98,34 @@ octo_mcp_post --header "MCP-Protocol-Version: $octo_mcp_version" \
 The HTTP endpoint returns one JSON-RPC response per request ID and uses
 `2025-03-26`, `2025-06-18`, or `2025-11-25`. Authenticate each POST.
 
-## Call the tool
+## Read bundled skills
+
+Both stdio and Streamable HTTP expose the read-only `skills` tool. It reads all
+enabled skills embedded in the running binary. A `tools/call` request takes
+an empty argument object:
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"skills","arguments":{}}}
+```
+
+Parse `result.content[0].text` as JSON to get an object with a `skills` array.
+Protocols `2025-06-18` and `2025-11-25` also return that object directly in
+`result.structuredContent`. Entries are sorted by `name` and include
+`description`, the complete `SKILL.md` in `content`, and the full text of
+sibling Markdown files keyed by filename in `references` (empty object if none).
+Check `result.isError` before parsing.
+
+The same HTTP listener serves public `GET /v1/skills` (operation ID
+`skill.list`). It requires no credentials and returns the same object in
+`data`. An empty catalog returns `{"data":{"skills":[]}}`. A load failure
+returns HTTP 500 with `error.code` set to `INTERNAL_ERROR`.
+[OpenAPI contract](mcp-skills.openapi.json)
+
+```sh
+curl -fsS http://127.0.0.1:8765/v1/skills
+```
+
+## Call exec
 
 `exec` accepts an `args` array of 1 to 256 strings. Pass each argument after
 `octo-cli` as a separate element. Spaces inside an argument are preserved. NUL
@@ -169,7 +196,7 @@ the CLI.
 | `isError` with `auth_error` in the tool result | Check the Token's validity for the configured Octo gateway. |
 | `PROFILE_SCOPE_MISMATCH` | Match any gateway or Space override to the profile configured on the server. |
 | An identity call returns a gateway permission error | Check that the Token has `im.identity:read` in the intended Space. |
-| `tools/call` returns JSON-RPC error `-32602` | Use the tool name `exec` and pass 1 to 256 strings in `arguments.args`. |
+| `tools/call` returns JSON-RPC error `-32602` | Check the tool name and input schema. Pass `{}` for `skills` or 1 to 256 strings in `arguments.args` for `exec`. |
 | A Server v2 command is missing | Use `schema --list` and check that the deployed binary bundles the Server v2 registry. |
 
 ## Local stdio clients

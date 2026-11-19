@@ -1,4 +1,4 @@
-// Package mcp serves the Octo CLI MCP tool over stdio and Streamable HTTP.
+// Package mcp serves Octo CLI tools over stdio and Streamable HTTP.
 package mcp
 
 import (
@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/Mininglamp-OSS/octo-cli/skills"
 )
 
 const (
@@ -48,6 +51,7 @@ func failure(id json.RawMessage, code int, message string) *response {
 }
 
 type session struct {
+	fsys         fs.FS
 	buildVersion string
 	protocol     string
 	execute      func(context.Context, []string) ExecResult
@@ -71,6 +75,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, version string, exe
 	go readFrames(ctx, in, frames)
 	encoder := json.NewEncoder(out)
 	s := session{
+		fsys:         skills.FS,
 		buildVersion: version,
 		execute:      execute,
 		active:       make(map[string]*activeCall),
@@ -233,7 +238,7 @@ func (s *session) request(ctx context.Context, msg *request) *response {
 	}
 	switch msg.Method {
 	case "tools/list":
-		return result(msg.ID, listTools())
+		return result(msg.ID, listTools(s.protocol))
 	case "tools/call":
 		return s.startCall(ctx, msg)
 	default:

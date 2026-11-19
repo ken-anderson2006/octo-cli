@@ -4,67 +4,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/Mininglamp-OSS/octo-cli/internal/config"
+	"github.com/Mininglamp-OSS/octo-cli/skills"
 )
-
-func TestParseSkillDescription(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"basic", "---\nname: x\ndescription: hello world\n---\nbody", "hello world"},
-		{"trims surrounding space", "---\ndescription:   spaced   \n---", "spaced"},
-		{"no frontmatter", "# title\ndescription: ignored", ""},
-		{"description only in body is ignored", "---\nname: x\n---\ndescription: in body", ""},
-		{"empty input", "", ""},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := parseSkillDescription([]byte(c.in)); got != c.want {
-				t.Errorf("parseSkillDescription(%q) = %q, want %q", c.in, got, c.want)
-			}
-		})
-	}
-}
-
-func TestLoadSkills(t *testing.T) {
-	entries, err := loadSkills()
-	if err != nil {
-		t.Fatalf("loadSkills: %v", err)
-	}
-	if len(entries) == 0 {
-		t.Fatal("expected at least one embedded skill")
-	}
-	for i, s := range entries {
-		if s.Name == "" || s.Description == "" || len(s.content) == 0 {
-			t.Errorf("entry %d incomplete: name=%q desc=%q contentLen=%d", i, s.Name, s.Description, len(s.content))
-		}
-		if i > 0 && entries[i-1].Name >= s.Name {
-			t.Errorf("entries not sorted ascending: %q before %q", entries[i-1].Name, s.Name)
-		}
-	}
-	// octo-shared is the foundational skill; it must always be embedded.
-	if !hasSkill(entries, "octo-shared") {
-		names := make([]string, len(entries))
-		for i, s := range entries {
-			names[i] = s.Name
-		}
-		t.Errorf("octo-shared not found among %v", names)
-	}
-}
-
-func hasSkill(entries []skillEntry, name string) bool {
-	for _, s := range entries {
-		if s.Name == name {
-			return true
-		}
-	}
-	return false
-}
 
 // A config without a token must still let `octo-cli skills` run — the command is
 // offline and on the skipValidation list.
@@ -183,5 +130,40 @@ func TestCmd_SkillsInstallRejectsName(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "validation") {
 		t.Errorf("expected a validation error, got: %s", errOut)
+	}
+}
+
+func TestSkillsInstallFromIndex(t *testing.T) {
+	files := fstest.MapFS{
+		"example/SKILL.md": {Data: []byte("---\ndescription: fixture\n---\n")},
+		"example/A.md":     {Data: []byte("before\r\n")},
+		"example/z.md":     {Data: []byte("after\n")},
+	}
+	entries, err := skills.List(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	f := newTestFactoryWithReg()
+	if err := runSkillsInstall(f.Factory, entries, dir); err != nil {
+		t.Fatal(err)
+	}
+	var env struct {
+		Data struct{ Installed []string }
+	}
+	if err := json.Unmarshal(f.Out.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, name := range []string{"example/A.md", "example/SKILL.md", "example/z.md"} {
+		dst := filepath.Join(dir, filepath.FromSlash(name))
+		paths = append(paths, dst)
+		b, err := os.ReadFile(dst)
+		if err != nil || string(b) != string(files[name].Data) {
+			t.Errorf("installed %s = %q, %v; want %q", dst, b, err, files[name].Data)
+		}
+	}
+	if !slices.Equal(env.Data.Installed, paths) {
+		t.Errorf("installed list = %v, want %v", env.Data.Installed, paths)
 	}
 }

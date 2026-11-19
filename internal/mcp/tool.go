@@ -5,11 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"strings"
+
+	"github.com/Mininglamp-OSS/octo-cli/skills"
 )
 
 const (
 	execTool    = "exec"
+	skillsTool  = "skills"
 	maxExecArgs = 256
 )
 
@@ -20,8 +24,8 @@ type ExecResult struct {
 	ExitCode int    `json:"exitCode"`
 }
 
-func listTools() map[string]any {
-	return map[string]any{"tools": []map[string]any{{
+func listTools(version string) map[string]any {
+	exec := map[string]any{
 		"name":        execTool,
 		"description": "Run a supported Octo CLI command. HTTP uses the request Bearer and exposes registered service operations. Use schema --list or --help to discover commands. Returns stdout, stderr, and exitCode.",
 		"inputSchema": map[string]any{
@@ -38,41 +42,89 @@ func listTools() map[string]any {
 				},
 			},
 		},
-	}}}
+	}
+	bundled := map[string]any{
+		"name":        skillsTool,
+		"description": "Return all enabled bundled skills with their full Markdown content and reference files.",
+		"inputSchema": map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		},
+	}
+	if version >= "2025-03-26" {
+		bundled["annotations"] = map[string]bool{"readOnlyHint": true, "idempotentHint": true}
+	}
+	if version >= "2025-06-18" {
+		bundled["outputSchema"] = skillsOutputSchema()
+	}
+	return map[string]any{"tools": []map[string]any{exec, bundled}}
+}
+
+func skillsOutputSchema() map[string]any {
+	text := map[string]string{"type": "string"}
+	skill := map[string]any{
+		"type":     "object",
+		"required": []string{"name", "description", "content", "references"},
+		"properties": map[string]any{
+			"name":        text,
+			"description": text,
+			"content":     text,
+			"references":  map[string]any{"type": "object", "additionalProperties": text},
+		},
+	}
+	return map[string]any{
+		"type":       "object",
+		"required":   []string{"skills"},
+		"properties": map[string]any{"skills": map[string]any{"type": "array", "items": skill}},
+	}
 }
 
 type activeCall struct {
-	id        json.RawMessage
 	cancel    context.CancelFunc
 	cancelled bool
 }
 
 type completedCall struct {
-	key    string
-	output ExecResult
+	key   string
+	reply *response
 }
 
-func parseToolCall(msg *request) (args []string, reply *response) {
+type toolCall struct {
+	name string
+	args []string
+}
+
+func parseToolCall(msg *request) (*toolCall, *response) {
 	params, ok := decodeObject(msg.Params, "name", "arguments", "_meta")
 	var name string
 	if !ok || json.Unmarshal(params["name"], &name) != nil || name == "" {
-		return nil, failure(msg.ID, -32602, "Tool parameters require a name and arguments")
+		return nil, failure(msg.ID, -32602, "Tool parameters require a name")
 	}
 	if meta := params["_meta"]; len(meta) != 0 && meta[0] != '{' {
 		return nil, failure(msg.ID, -32602, "Tool metadata must be an object")
 	}
-	if name != execTool {
+	switch name {
+	case execTool:
+		args, ok := execArgs(params["arguments"])
+		if !ok {
+			return nil, failure(msg.ID, -32602, fmt.Sprintf("exec requires 1 to %d strings in args without NUL characters", maxExecArgs))
+		}
+		return &toolCall{name: name, args: args}, nil
+	case skillsTool:
+		if raw := params["arguments"]; raw != nil {
+			if _, ok := decodeObject(raw); !ok {
+				return nil, failure(msg.ID, -32602, "skills accepts an empty arguments object")
+			}
+		}
+		return &toolCall{name: name}, nil
+	default:
 		return nil, failure(msg.ID, -32602, "Unknown tool")
 	}
-	args, ok = execArgs(params["arguments"])
-	if !ok {
-		return nil, failure(msg.ID, -32602, fmt.Sprintf("exec requires 1 to %d strings in args without NUL characters", maxExecArgs))
-	}
-	return args, nil
 }
 
 func (s *session) startCall(ctx context.Context, msg *request) *response {
-	args, reply := parseToolCall(msg)
+	call, reply := parseToolCall(msg)
 	if reply != nil {
 		return reply
 	}
@@ -84,11 +136,11 @@ func (s *session) startCall(ctx context.Context, msg *request) *response {
 		return failure(msg.ID, -32000, "Too many active tool calls")
 	}
 	callCtx, cancel := context.WithCancel(ctx)
-	s.active[key] = &activeCall{id: msg.ID, cancel: cancel}
+	s.active[key] = &activeCall{cancel: cancel}
 	go func() {
-		output := s.execute(callCtx, args)
+		reply := call.run(callCtx, msg.ID, s.protocol, s.fsys, s.execute)
 		select {
-		case s.completed <- completedCall{key: key, output: output}:
+		case s.completed <- completedCall{key: key, reply: reply}:
 		case <-ctx.Done():
 		}
 	}()
@@ -128,9 +180,9 @@ type textContent struct {
 }
 
 type toolResult struct {
-	Content           []textContent `json:"content"`
-	IsError           bool          `json:"isError"`
-	StructuredContent *ExecResult   `json:"structuredContent,omitempty"`
+	Content           []textContent   `json:"content"`
+	IsError           bool            `json:"isError"`
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
 }
 
 func (s *session) finishCall(done completedCall) *response {
@@ -140,20 +192,35 @@ func (s *session) finishCall(done completedCall) *response {
 	if call.cancelled {
 		return nil
 	}
-	return execResponse(call.id, s.protocol, done.output)
+	return done.reply
 }
 
-func execResponse(id json.RawMessage, version string, exec ExecResult) *response {
-	text, err := json.Marshal(exec)
+func (call *toolCall) run(ctx context.Context, id json.RawMessage, version string, fsys fs.FS, execute func(context.Context, []string) ExecResult) *response {
+	if call.name == skillsTool {
+		bundle, err := skills.LoadAll(fsys)
+		if err != nil {
+			return result(id, toolResult{
+				Content: []textContent{{Type: "text", Text: "Failed to load skills"}},
+				IsError: true,
+			})
+		}
+		return toolResponse(id, version, bundle, false)
+	}
+	exec := execute(ctx, call.args)
+	return toolResponse(id, version, exec, exec.ExitCode != 0)
+}
+
+func toolResponse(id json.RawMessage, version string, value any, isError bool) *response {
+	text, err := json.Marshal(value)
 	if err != nil {
 		return failure(id, -32603, "Could not encode tool output")
 	}
 	output := toolResult{
 		Content: []textContent{{Type: "text", Text: string(text)}},
-		IsError: exec.ExitCode != 0,
+		IsError: isError,
 	}
 	if version >= "2025-06-18" {
-		output.StructuredContent = &exec
+		output.StructuredContent = text
 	}
 	return result(id, output)
 }

@@ -2,13 +2,20 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
@@ -232,5 +239,46 @@ func assertTestHTTPExec(t *testing.T, got testHTTPResult) {
 	if got.err != nil || got.status != http.StatusOK || !strings.Contains(got.body, "fixture") ||
 		!strings.Contains(got.body, `"isError":false`) {
 		t.Fatalf("want successful exec response, got %+v", got)
+	}
+}
+
+func TestPublicSkillsMethod(t *testing.T) {
+	url, _, _ := startTestHTTP(t, HTTPOptions{ShutdownTimeout: 2 * time.Second}, nil)
+	got := testHTTPRequest(t.Context(), http.MethodPost, url+"/v1/skills", "")
+	if got.err != nil || got.status != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /v1/skills = %+v, want HTTP 405", got)
+	}
+}
+
+func TestPublicSkillsEnvelope(t *testing.T) {
+	tests := []struct {
+		name   string
+		fsys   fs.FS
+		status int
+		body   string
+	}{
+		{"empty", fstest.MapFS{}, http.StatusOK, `{"data":{"skills":[]}}`},
+		{"unreadable", os.DirFS(filepath.Join(t.TempDir(), "missing")), http.StatusInternalServerError,
+			`{"error":{"code":"INTERNAL_ERROR","message":"Failed to load skills","details":{},"hint":""}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := httpTransport{fsys: tt.fsys}
+			recorder := httptest.NewRecorder()
+			h.publicSkills(recorder, httptest.NewRequest(http.MethodGet, "/v1/skills", nil))
+			if recorder.Code != tt.status || recorder.Header().Get("Content-Type") != "application/json" {
+				t.Fatalf("response = %d %q, want %d application/json", recorder.Code, recorder.Header().Get("Content-Type"), tt.status)
+			}
+			var got, want any
+			if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(tt.body), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("response body = %s, want %s", recorder.Body, tt.body)
+			}
+		})
 	}
 }

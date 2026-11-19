@@ -29,7 +29,7 @@ func newMCPCmd(f *cmdutil.Factory) *cobra.Command {
 	var httpOptions mcp.HTTPOptions
 	serve := &cobra.Command{
 		Use:   "serve",
-		Short: "Serve the Octo CLI MCP tool over stdio or Streamable HTTP",
+		Short: "Serve Octo CLI MCP tools over stdio or Streamable HTTP",
 		Args:  cobra.NoArgs,
 		Annotations: map[string]string{
 			"skipValidation":      "true",
@@ -50,7 +50,7 @@ func newMCPCmd(f *cmdutil.Factory) *cobra.Command {
 				func(ctx context.Context, args []string) mcp.ExecResult { return execute(ctx, "", args) })
 		},
 	}
-	serve.Flags().StringVar(&listen, "listen", "", "serve Streamable HTTP at /mcp on host:port (for example 127.0.0.1:8765)")
+	serve.Flags().StringVar(&listen, "listen", "", "serve MCP at /mcp and public skills at /v1/skills on host:port (for example 127.0.0.1:8765)")
 	serve.Flags().DurationVar(&httpOptions.DrainDelay, "drain-delay", 0, "wait after readiness fails before closing the HTTP listener")
 	serve.Flags().DurationVar(&httpOptions.ShutdownTimeout, "shutdown-timeout", mcp.DefaultHTTPShutdownTimeout, "maximum time to drain accepted HTTP requests")
 	group.AddCommand(serve)

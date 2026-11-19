@@ -91,7 +91,31 @@ octo_mcp_post --header "MCP-Protocol-Version: $octo_mcp_version" \
 HTTP 入口为每条带 `id` 的请求返回一条 JSON-RPC 响应，支持 `2025-03-26`、`2025-06-18`
 和 `2025-11-25`。每次 POST 都携带 Bearer 请求头。
 
-## 调用工具和读取结果
+## 读取内置 Skills
+
+stdio 和 Streamable HTTP 都提供只读工具 `skills`，一次读取当前二进制内置且启用的全部
+Skills。调用时传入空参数对象。
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"skills","arguments":{}}}
+```
+
+先检查 `result.isError`，成功后将 `result.content[0].text` 解析为 JSON，即可读取
+`skills` 数组。协议 `2025-06-18` 和 `2025-11-25` 也会在
+`result.structuredContent` 直接返回同一对象。数组按 `name` 升序排列，每项包含
+`description`、`content` 中的完整 `SKILL.md`，以及同级 Markdown 文件的全文。
+这些文件以文件名为键放在 `references` 中，无引用时为 `{}`。
+
+同一监听地址提供公开的 `GET /v1/skills`（operationId 为 `skill.list`）。
+该接口无需凭据，成功时在 `data` 中返回同一对象。空集合返回 `{"data":{"skills":[]}}`。
+加载失败返回 HTTP 500，`error.code` 为 `INTERNAL_ERROR`。
+[OpenAPI 契约](mcp-skills.openapi.json)
+
+```sh
+curl -fsS http://127.0.0.1:8765/v1/skills
+```
+
+## 调用 exec
 
 `exec` 工具接收含 1 到 256 个字符串的 `args` 数组。每个元素对应 `octo-cli`
 后面的一个参数，保留参数值里的空格。工具参数中的 NUL 字符、未知 JSON 字段和
@@ -156,7 +180,7 @@ schema 声明的数值范围。
 | 工具结果显示 `isError`，且包含 `auth_error` | 检查 Token 对配置的 Octo 网关是否有效。 |
 | 返回 `PROFILE_SCOPE_MISMATCH` | 显式指定的网关或 Space 要与服务端 Profile 的绑定一致。 |
 | 身份查询返回网关权限错误 | 检查 Token 在目标 Space 中是否有 `im.identity:read`。 |
-| `tools/call` 返回 JSON-RPC 错误 `-32602` | 确认工具名为 `exec`，并在 `arguments.args` 中传入 1 到 256 个字符串。 |
+| `tools/call` 返回 JSON-RPC 错误 `-32602` | 核对工具名称和入参。调用 `skills` 时传入 `{}`，调用 `exec` 时在 `arguments.args` 中传入 1 到 256 个字符串。 |
 | 查不到 Server v2 命令 | 用 `schema --list` 检查部署的二进制是否内置 Server v2 注册表。 |
 
 ## 本地 stdio 接入

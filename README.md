@@ -128,10 +128,11 @@ OCTO_API_BASE_URL=https://octo-gateway.example.com \
   ./bin/octo-cli mcp serve --listen 127.0.0.1:8765
 ```
 
-Publish `/mcp` through your HTTPS ingress. Each client sends its existing Octo
-Token in the `Authorization` header. The server uses that Bearer for the call
-to the configured Octo gateway. HTTP business calls use registered CLI service
-commands. [MCP integration guide](docs/mcp-integration.md)
+Route `/mcp` and `/v1/skills` to the same service through your HTTPS ingress.
+Every `/mcp` request carries the caller's Octo Bearer. Business calls use
+that token and the registered CLI service commands. Public `GET /v1/skills`
+returns the enabled skills embedded in the running binary under `data.skills`.
+[MCP integration guide](docs/mcp-integration.md)
 and [Chinese guide](docs/mcp-integration.zh-CN.md).
 
 ### Local stdio
@@ -158,14 +159,16 @@ The launcher can also provide `OCTO_TOKEN` or select a saved profile with
 applies. The server can initialize and list tools before a credential is
 available. Authenticated commands resolve their credentials on invocation.
 
-The single tool, `exec`, accepts `{"args":["schema","--list"]}`. Pass each
+`tools/list` exposes `skills` and `exec`. The read-only `skills` tool takes
+`{}` and returns all enabled skill documents and their Markdown references.
+The `exec` tool accepts `{"args":["schema","--list"]}`. Pass each
 CLI argument as its own string. For example, to preview a POST request:
 
 ```json
 {"args":["api","POST","/v1/items","--data","{\"name\":\"example\"}","--dry-run"]}
 ```
 
-Results contain `stdout`, `stderr` and `exitCode`. A nonzero exit code also
+`exec` results contain `stdout`, `stderr` and `exitCode`. A nonzero exit code also
 sets MCP's `isError`. Use inline JSON for request bodies and run local file
 operations, credential management and upgrades directly in the CLI.
 
