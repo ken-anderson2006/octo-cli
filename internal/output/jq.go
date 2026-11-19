@@ -1,0 +1,119 @@
+package output
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/itchyny/gojq"
+)
+
+// JQProgram is a compiled jq expression that can be applied to multiple values.
+type JQProgram struct {
+	code *gojq.Code
+}
+
+// CompileJQ parses and compiles an expression without evaluating it.
+func CompileJQ(expr string) (*JQProgram, error) {
+	query, err := gojq.Parse(expr)
+	if err != nil {
+		return nil, ErrWithHint("config", "CLI_ERROR",
+			"jq expression could not be parsed",
+			"check the --jq expression's syntax")
+	}
+	code, err := gojq.Compile(query)
+	if err != nil {
+		return nil, ErrWithHint("config", "CLI_ERROR",
+			"jq expression could not be compiled",
+			"check the --jq expression's function, variable, and module references")
+	}
+	return &JQProgram{code: code}, nil
+}
+
+// ApplyJQ runs a jq expression against v and returns the resulting values.
+// When the query yields a single result, the first (and only) element of the
+// returned slice holds it; when it yields multiple, all are returned in order.
+// An empty query is a passthrough.
+func ApplyJQ(v any, expr string) ([]any, error) {
+	if expr == "" {
+		return []any{v}, nil
+	}
+	program, err := CompileJQ(expr)
+	if err != nil {
+		return nil, err
+	}
+	return program.Apply(v)
+}
+
+// Apply runs the compiled expression against v and returns its resulting values.
+func (program *JQProgram) Apply(v any) ([]any, error) {
+	return program.ApplyContext(context.Background(), v)
+}
+
+// ApplyContext evaluates the query with the command invocation's cancellation.
+func (program *JQProgram) ApplyContext(ctx context.Context, v any) ([]any, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	input, err := normalizeForJQ(v)
+	if err != nil {
+		return nil, fmt.Errorf("normalize input: %w", err)
+	}
+
+	iter := program.code.RunWithContext(ctx, input)
+	var results []any
+	for {
+		r, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if e, ok := r.(error); ok {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			// gojq's runtime errors quote the value they choked on, and that value is
+			// *response data* — which on a share command is the share token itself. So
+			// `--jq '.data.share_token|tonumber'` printed the token on stderr while
+			// stdout stayed empty: a caller narrowing their output with --jq got the
+			// secret instead. Nothing here has a secret list to mask against (this runs
+			// in the output layer, below the client), so the value is not repeated.
+			//
+			// This is also why it must be an *ExitError: as a plain error it fell to
+			// WrapCLIError's generic fallback, which both echoed the text and filed it
+			// as a config error rather than a validation one.
+			_ = e
+			return nil, ErrWithHint("validation", "JQ_RUNTIME_ERROR",
+				"the --jq program failed while evaluating the response",
+				"check the filter against the unfiltered output first; the value it failed on is "+
+					"not repeated here because response data can itself be a secret")
+		}
+		results = append(results, r)
+	}
+	return results, nil
+}
+
+// normalizeForJQ round-trips v through JSON so gojq receives a canonical
+// any tree (map[string]any / []any / primitives). Saves us from dealing with
+// json.RawMessage / custom types inside the jq engine.
+func normalizeForJQ(v any) (any, error) {
+	// Fast path: already a canonical shape and not a RawMessage.
+	if _, isRaw := v.(json.RawMessage); !isRaw {
+		switch v.(type) {
+		case map[string]any, []any, string, float64, bool, nil:
+			return v, nil
+		}
+	}
+
+	buf, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var out any
+	if err := json.Unmarshal(buf, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}

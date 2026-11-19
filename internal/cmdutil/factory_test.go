@@ -1,0 +1,483 @@
+package cmdutil
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/Mininglamp-OSS/octo-cli/internal/config"
+	"github.com/Mininglamp-OSS/octo-cli/internal/credential"
+	"github.com/Mininglamp-OSS/octo-cli/internal/output"
+)
+
+// TestMain isolates fixture config and credentials from the user environment.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "octo-cmdutil-test")
+	if err != nil {
+		panic(err)
+	}
+	sweepOctoEnv()
+	os.Setenv("OCTO_CONFIG_DIR", dir)
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// sweepOctoEnv unsets every OCTO_-prefixed variable in the process environment.
+// os.Environ returns a snapshot, so unsetting while ranging over it is safe.
+func sweepOctoEnv() {
+	for _, kv := range os.Environ() {
+		if name, _, found := strings.Cut(kv, "="); found && strings.HasPrefix(name, "OCTO_") {
+			os.Unsetenv(name)
+		}
+	}
+}
+
+func TestNewDefaultFactory_InitializesFields(t *testing.T) {
+	f := NewDefaultFactory()
+	if f == nil {
+		t.Fatal("NewDefaultFactory returned nil")
+	}
+	if f.IOStreams == nil {
+		t.Error("IOStreams should be initialized")
+	}
+	if f.Globals == nil {
+		t.Error("Globals should be initialized")
+	}
+	if f.ConfigFunc == nil || f.CredentialFunc == nil || f.ClientFunc == nil || f.RegistryFunc == nil {
+		t.Error("all provider funcs should be set")
+	}
+}
+
+func TestFactory_ConfigCaches(t *testing.T) {
+	t.Setenv(config.EnvToken, "app_xxx")
+	t.Setenv("OCTO_API_BASE_URL", "http://x")
+
+	f := NewDefaultFactory()
+	c1, err := f.Config()
+	if err != nil {
+		t.Fatalf("Config: %v", err)
+	}
+	c2, err := f.Config()
+	if err != nil {
+		t.Fatalf("Config: %v", err)
+	}
+	if c1 != c2 {
+		t.Errorf("Config should cache: %p vs %p", c1, c2)
+	}
+}
+
+func TestFactory_RequestConfigSharesLoadWithValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, token string
+		wantAuthErr bool
+	}{
+		{"configured", "fixture-token", false},
+		{"no credential", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f := NewTestFactory()
+			loads := 0
+			f.ConfigFunc = func() (*config.Config, error) {
+				loads++
+				return &config.Config{APIBaseURL: "https://gateway.example.test", Token: tc.token}, nil
+			}
+			if _, err := f.RequestConfig(ctx); err != nil {
+				t.Fatalf("diagnostics could not load configuration: %v", err)
+			}
+			for range 2 {
+				_, err := f.ValidatedRequestConfig(ctx)
+				if tc.wantAuthErr {
+					if exit := output.AsExitError(WrapCLIError(err)); exit == nil || exit.Type != "auth_error" {
+						t.Fatalf("request validation = %v, want an authentication error", err)
+					}
+				} else if err != nil {
+					t.Fatalf("request validation failed: %v", err)
+				}
+			}
+			if loads != 1 {
+				t.Fatalf("configuration loaded %d times, want one", loads)
+			}
+		})
+	}
+}
+
+func TestFactory_ConfigFormatOverride(t *testing.T) {
+	t.Setenv(config.EnvToken, "app_xxx")
+	t.Setenv("OCTO_FORMAT", "json")
+
+	f := NewDefaultFactory()
+	f.Globals.Format = "table"
+
+	cfg, err := f.Config()
+	if err != nil {
+		t.Fatalf("Config: %v", err)
+	}
+	if cfg.Format != "table" {
+		t.Errorf("Globals.Format should override config, got %q", cfg.Format)
+	}
+}
+
+func TestFactory_CredentialFromEnv(t *testing.T) {
+	t.Setenv(config.EnvToken, "app_yyy")
+	t.Setenv("OCTO_SPACE_ID", "space-A")
+
+	f := NewDefaultFactory()
+	cred, err := f.Credential()
+	if err != nil {
+		t.Fatalf("Credential: %v", err)
+	}
+	if cred.Token != "app_yyy" {
+		t.Errorf("Token = %q", cred.Token)
+	}
+	if cred.SpaceID != "space-A" {
+		t.Errorf("SpaceID = %q", cred.SpaceID)
+	}
+}
+
+func TestFactory_CredentialSpaceOverride(t *testing.T) {
+	t.Setenv(config.EnvToken, "app_yyy")
+	t.Setenv("OCTO_SPACE_ID", "space-env")
+
+	f := NewDefaultFactory()
+	f.Globals.Space = "space-flag"
+
+	cred, err := f.Credential()
+	if err != nil {
+		t.Fatalf("Credential: %v", err)
+	}
+	if cred.SpaceID != "space-flag" {
+		t.Errorf("--space flag should override env, got %q", cred.SpaceID)
+	}
+}
+
+func TestFactory_CredentialCaches(t *testing.T) {
+	t.Setenv(config.EnvToken, "app_yyy")
+	f := NewDefaultFactory()
+	c1, err := f.Credential()
+	if err != nil {
+		t.Fatalf("Credential: %v", err)
+	}
+	c2, _ := f.Credential()
+	if c1 != c2 {
+		t.Errorf("Credential should cache: %p vs %p", c1, c2)
+	}
+}
+
+func TestFactory_ClientCaches(t *testing.T) {
+	t.Setenv(config.EnvToken, "fixture_token")
+	t.Setenv("OCTO_API_BASE_URL", "http://x")
+	f := NewDefaultFactory()
+
+	c1, err := f.Client()
+	if err != nil {
+		t.Fatalf("Client: %v", err)
+	}
+	c2, _ := f.Client()
+	if c1 != c2 {
+		t.Errorf("Client should cache: %p vs %p", c1, c2)
+	}
+}
+
+func TestFactory_RegistryCaches(t *testing.T) {
+	f := NewDefaultFactory()
+	r1 := f.Registry()
+	r2 := f.Registry()
+	if r1 == nil {
+		t.Fatal("Registry should be non-nil")
+	}
+	if r1 != r2 {
+		t.Errorf("Registry should cache: %p vs %p", r1, r2)
+	}
+}
+
+func TestFactory_RegistryNilFunc(t *testing.T) {
+	f := &Factory{}
+	if f.Registry() != nil {
+		t.Error("Registry should be nil when RegistryFunc is nil")
+	}
+}
+
+func TestFactory_Format_FlagWins(t *testing.T) {
+	f := NewTestFactory()
+	f.Globals.Format = "csv"
+	if got := f.Format(); got != "csv" {
+		t.Errorf("Format = %q, want csv", got)
+	}
+}
+
+func TestFactory_Format_ConfigFallback(t *testing.T) {
+	f := NewTestFactory()
+	f.SetConfig(&config.Config{Format: "ndjson"})
+	if got := f.Format(); got != "ndjson" {
+		t.Errorf("Format = %q, want ndjson from config", got)
+	}
+}
+
+func TestFactory_Format_DefaultsToJSON(t *testing.T) {
+	// ConfigFunc returns an error → Format falls back to the JSON default.
+	f := &Factory{
+		Globals:    &GlobalOptions{},
+		ConfigFunc: func() (*config.Config, error) { return nil, errors.New("no config") },
+	}
+	if got := f.Format(); got != output.FormatJSON {
+		t.Errorf("Format = %q, want %q", got, output.FormatJSON)
+	}
+}
+
+func TestFactory_EmitSuccess_EmitsEnvelope(t *testing.T) {
+	f := NewTestFactory()
+	raw := []byte(`{"id":"t1"}`)
+	if err := f.EmitSuccess(raw); err != nil {
+		t.Fatalf("EmitSuccess: %v", err)
+	}
+	var env map[string]any
+	if err := json.Unmarshal(f.Out.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal: %v -- %s", err, f.Out.String())
+	}
+	if env["ok"] != true {
+		t.Errorf("ok = %v", env["ok"])
+	}
+	data, _ := env["data"].(map[string]any)
+	if data["id"] != "t1" {
+		t.Errorf("data.id = %v", data["id"])
+	}
+}
+
+func TestFactory_EmitSuccess_FlattensPagination(t *testing.T) {
+	f := NewTestFactory()
+	raw := []byte(`{"data":[{"id":"a"}],"pagination":{"has_more":false}}`)
+	if err := f.EmitSuccess(raw); err != nil {
+		t.Fatalf("EmitSuccess: %v", err)
+	}
+	var env map[string]any
+	_ = json.Unmarshal(f.Out.Bytes(), &env)
+	items, _ := env["data"].([]any)
+	if len(items) != 1 {
+		t.Errorf("data len = %d", len(items))
+	}
+	if _, ok := env["_pagination"]; !ok {
+		t.Errorf("_pagination missing")
+	}
+}
+
+func TestFactory_EmitSuccess_JQFilter(t *testing.T) {
+	f := NewTestFactory()
+	f.Globals.JQ = ".data.id"
+	raw := []byte(`{"id":"t1"}`)
+	if err := f.EmitSuccess(raw); err != nil {
+		t.Fatalf("EmitSuccess: %v", err)
+	}
+	got := strings.TrimSpace(f.Out.String())
+	// Format=json renders single jq result back to JSON scalar.
+	if got != `"t1"` {
+		t.Errorf("jq output = %q, want %q", got, `"t1"`)
+	}
+}
+
+func TestFactory_EmitSuccess_TableFormat(t *testing.T) {
+	f := NewTestFactory()
+	f.Globals.Format = "table"
+	raw := []byte(`{"data":[{"id":"t1","title":"x"}],"pagination":{}}`)
+	if err := f.EmitSuccess(raw); err != nil {
+		t.Fatalf("EmitSuccess: %v", err)
+	}
+	out := f.Out.String()
+	if !strings.Contains(out, "t1") || !strings.Contains(out, "id") {
+		t.Errorf("table output missing content:\n%s", out)
+	}
+}
+
+func TestFactory_EmitSuccess_NDJSONFormat(t *testing.T) {
+	f := NewTestFactory()
+	f.Globals.Format = "ndjson"
+	raw := []byte(`{"data":[{"id":"a"},{"id":"b"},{"id":"c"}],"pagination":{}}`)
+	if err := f.EmitSuccess(raw); err != nil {
+		t.Fatalf("EmitSuccess: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(f.Out.String()), "\n")
+	if len(lines) != 3 {
+		t.Errorf("expected 3 lines, got %d: %q", len(lines), f.Out.String())
+	}
+}
+
+func TestFactory_EmitSuccess_CSVFormat(t *testing.T) {
+	f := NewTestFactory()
+	f.Globals.Format = "csv"
+	raw := []byte(`{"data":[{"id":"t1","title":"x"}],"pagination":{}}`)
+	if err := f.EmitSuccess(raw); err != nil {
+		t.Fatalf("EmitSuccess: %v", err)
+	}
+	if !strings.Contains(f.Out.String(), "id") || !strings.Contains(f.Out.String(), "t1") {
+		t.Errorf("csv output missing:\n%s", f.Out.String())
+	}
+}
+
+func TestFactory_EmitError_ExitError(t *testing.T) {
+	f := NewTestFactory()
+	ee := output.ErrValidation("bad input", "try again")
+	if err := f.EmitError(ee); err != nil {
+		t.Fatalf("EmitError: %v", err)
+	}
+	if !f.ErrorEmitted {
+		t.Error("ErrorEmitted should be true after EmitError")
+	}
+	var env map[string]any
+	if err := json.Unmarshal(f.ErrOut.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if env["ok"] != false {
+		t.Errorf("ok = %v", env["ok"])
+	}
+	errObj, _ := env["error"].(map[string]any)
+	if errObj["type"] != "validation" {
+		t.Errorf("type = %v", errObj["type"])
+	}
+}
+
+func TestFactory_ErrorEmitted_InitiallyFalse(t *testing.T) {
+	f := NewTestFactory()
+	if f.ErrorEmitted {
+		t.Error("ErrorEmitted should be false on new Factory")
+	}
+}
+
+func TestFactory_EmitError_PlainErrorWrapped(t *testing.T) {
+	f := NewTestFactory()
+	if err := f.EmitError(errors.New("OCTO_BOT_TOKEN missing")); err != nil {
+		t.Fatalf("EmitError: %v", err)
+	}
+	var env map[string]any
+	_ = json.Unmarshal(f.ErrOut.Bytes(), &env)
+	errObj, _ := env["error"].(map[string]any)
+	if errObj["type"] != "auth_error" {
+		t.Errorf("token-related error should be auth_error, got %v", errObj["type"])
+	}
+}
+
+func TestWrapCLIError_Nil(t *testing.T) {
+	if WrapCLIError(nil) != nil {
+		t.Error("nil in → nil out")
+	}
+}
+
+func TestWrapCLIError_PassesThroughExitError(t *testing.T) {
+	orig := output.ErrAuth("no token", "set it")
+	got := WrapCLIError(orig)
+	if ee := output.AsExitError(got); ee != orig {
+		t.Errorf("existing *ExitError should pass through unchanged")
+	}
+}
+
+func TestWrapCLIError_Heuristics(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+		typ  string
+	}{
+		{"token-required", "bot token is required", "auth_error"},
+		{"env-var", "OCTO_BOT_TOKEN missing", "auth_error"},
+		{"unknown-flag", "unknown flag --wat", "validation"},
+		{"unknown-command", "unknown command \"foo\"", "validation"},
+		{"required-flag", "required flag(s) \"title\" not set", "validation"},
+		{"invalid-arg", "invalid argument \"x\" for --count", "validation"},
+		{"accepts", "accepts 2 arg(s)", "validation"},
+		{"generic", "something else went wrong", "config"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := WrapCLIError(errors.New(c.msg))
+			ee := output.AsExitError(got)
+			if ee == nil {
+				t.Fatalf("expected *ExitError, got %T", got)
+			}
+			if ee.Type != c.typ {
+				t.Errorf("Type = %q, want %q (msg=%q)", ee.Type, c.typ, c.msg)
+			}
+		})
+	}
+}
+
+func TestFactory_OutErrOutAccessors(t *testing.T) {
+	f := NewTestFactory()
+	if f.Factory.Out() != f.Out {
+		t.Error("Out() should match IOStreams.Out")
+	}
+	if f.Factory.ErrOut() != f.ErrOut {
+		t.Error("ErrOut() should match IOStreams.ErrOut")
+	}
+}
+
+// Ensure we don't regress the "Credential SpaceID zero-override" path: when
+// Globals.Space is empty, the env-sourced SpaceID must remain intact.
+func TestFactory_CredentialEmptySpaceDoesNotOverride(t *testing.T) {
+	t.Setenv(config.EnvToken, "app_yyy")
+	t.Setenv("OCTO_SPACE_ID", "space-env")
+	f := NewDefaultFactory()
+	// Globals.Space left empty intentionally.
+	cred, err := f.Credential()
+	if err != nil {
+		t.Fatalf("Credential: %v", err)
+	}
+	if cred.SpaceID != "space-env" {
+		t.Errorf("empty Globals.Space shouldn't clear env SpaceID, got %q", cred.SpaceID)
+	}
+}
+
+// Sanity check: the Factory's injected hooks surface Credential/Config
+// without touching the env when replaced.
+func TestFactory_InjectedHooksUsed(t *testing.T) {
+	f := NewTestFactory()
+	f.SetCredential(&credential.Credential{Token: "stub_tok"})
+	cred, err := f.Credential()
+	if err != nil {
+		t.Fatalf("Credential: %v", err)
+	}
+	if cred.Token != "stub_tok" {
+		t.Errorf("injected credential not used: %q", cred.Token)
+	}
+}
+
+// TestFactory_IdentityEcho verifies the request profile and source in the envelope.
+func TestFactory_IdentityEcho(t *testing.T) {
+	tf := NewTestFactory()
+	tf.cred = &credential.Credential{
+		Token: "app_x", Profile: "prod", Source: "managed_store",
+	}
+	if err := tf.EmitRequestSuccess([]byte(`{"k":"v"}`)); err != nil {
+		t.Fatalf("EmitRequestSuccess: %v", err)
+	}
+	var env map[string]any
+	if err := json.Unmarshal(tf.Out.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, tf.Out.String())
+	}
+	id, ok := env["identity"].(map[string]any)
+	if !ok {
+		t.Fatalf("identity is not an object: %v", env["identity"])
+	}
+	if id["profile"] != "prod" || id["source"] != "managed_store" {
+		t.Errorf("identity = %v", id)
+	}
+}
+
+// TestFactory_IdentityDefaultsToBot verifies the envelope emits the minimal
+// identity object {type:bot} when no credential was resolved — the field is
+// always an object, never a bare string.
+func TestFactory_IdentityDefaultsToBot(t *testing.T) {
+	tf := NewTestFactory()
+	if err := tf.EmitSuccess([]byte(`{}`)); err != nil {
+		t.Fatalf("EmitSuccess: %v", err)
+	}
+	var env map[string]any
+	if err := json.Unmarshal(tf.Out.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	id, ok := env["identity"].(map[string]any)
+	if !ok || id["type"] != "bot" {
+		t.Errorf("identity = %v, want {type:bot}", env["identity"])
+	}
+}

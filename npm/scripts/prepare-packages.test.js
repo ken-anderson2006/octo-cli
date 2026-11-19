@@ -1,0 +1,275 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { execFileSync, spawnSync } = require("child_process");
+
+const SCRIPT = path.join(__dirname, "prepare-packages.js");
+const SHIM = path.join(__dirname, "..", "bin", "octo-cli.js");
+const NPM_PUBLISH_YAML = path.join(__dirname, "..", "..", ".github", "workflows", "npm-publish.yml");
+const { PLATFORMS, binFileName } = require(SCRIPT);
+const shim = require(SHIM);
+const VERSION = "9.9.9";
+
+function makeDist(distDir) {
+  fs.mkdirSync(distDir, { recursive: true });
+  for (const { goOs, goArch } of PLATFORMS) {
+    const stage = fs.mkdtempSync(path.join(os.tmpdir(), "octo-cli-stage-"));
+    const bin = binFileName(goOs);
+    fs.writeFileSync(path.join(stage, bin), `#!/bin/sh\necho fake ${goOs}/${goArch} "$@"\n`, {
+      mode: 0o755,
+    });
+    execFileSync("tar", [
+      "-czf",
+      path.join(distDir, `octo-cli_${VERSION}_${goOs}_${goArch}.tar.gz`),
+      "-C",
+      stage,
+      bin,
+    ]);
+    fs.rmSync(stage, { recursive: true, force: true });
+  }
+}
+
+function run(args) {
+  return spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8" });
+}
+
+test("emits one package per platform and a pinned main package", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "octo-cli-prep-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const distDir = path.join(tmp, "dist");
+  const outDir = path.join(tmp, "out");
+  makeDist(distDir);
+
+  const res = run(["--version", VERSION, "--dist", distDir, "--out", outDir]);
+  assert.strictEqual(res.status, 0, res.stderr);
+
+  for (const { goOs, npmOs, npmCpu } of PLATFORMS) {
+    const pkgDir = path.join(outDir, `octo-cli-${npmOs}-${npmCpu}`);
+    const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, "package.json"), "utf8"));
+    assert.strictEqual(manifest.name, `@mininglamp-oss/octo-cli-${npmOs}-${npmCpu}`);
+    assert.strictEqual(manifest.version, VERSION);
+    assert.deepStrictEqual(manifest.os, [npmOs]);
+    assert.deepStrictEqual(manifest.cpu, [npmCpu]);
+    assert.deepStrictEqual(manifest.files, [`bin/${binFileName(goOs)}`, "LICENSE"]);
+    const bin = path.join(pkgDir, "bin", binFileName(goOs));
+    assert.ok(fs.existsSync(bin), `missing ${bin}`);
+    assert.ok(fs.existsSync(path.join(pkgDir, "LICENSE")), `missing ${pkgDir}/LICENSE`);
+  }
+
+  const main = JSON.parse(fs.readFileSync(path.join(outDir, "octo-cli", "package.json"), "utf8"));
+  assert.strictEqual(main.name, "@mininglamp-oss/octo-cli");
+  assert.strictEqual(main.version, VERSION);
+  assert.strictEqual(main.scripts, undefined);
+  assert.strictEqual(main.os, undefined);
+  assert.strictEqual(main.cpu, undefined);
+  assert.deepStrictEqual(
+    Object.keys(main.optionalDependencies).sort(),
+    PLATFORMS.map((p) => `@mininglamp-oss/octo-cli-${p.npmOs}-${p.npmCpu}`).sort(),
+  );
+  for (const depVersion of Object.values(main.optionalDependencies)) {
+    assert.strictEqual(depVersion, VERSION);
+  }
+});
+
+test("rejects invalid versions and missing archives", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "octo-cli-prep-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(tmp, "dist"));
+
+  const badVersion = run(["--version", "v1.2.3", "--dist", path.join(tmp, "dist"), "--out", path.join(tmp, "out")]);
+  assert.notStrictEqual(badVersion.status, 0);
+  assert.match(badVersion.stderr, /--version must be bare semver/);
+
+  const missing = run(["--version", VERSION, "--dist", path.join(tmp, "dist"), "--out", path.join(tmp, "out")]);
+  assert.notStrictEqual(missing.status, 0);
+  assert.match(missing.stderr, /missing release archive/);
+});
+
+test("rejects unknown and duplicate arguments before touching output paths", (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "octo-cli-prep-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(tmp, "dist"));
+
+  const unknown = run([
+    "--version",
+    VERSION,
+    "--dist",
+    path.join(tmp, "dist"),
+    "--out",
+    path.join(tmp, "out"),
+    "--cache",
+    path.join(tmp, "cache"),
+  ]);
+  assert.notStrictEqual(unknown.status, 0);
+  assert.match(unknown.stderr, /unknown argument: --cache/);
+
+  const duplicate = run([
+    "--version",
+    VERSION,
+    "--dist",
+    path.join(tmp, "dist"),
+    "--out",
+    path.join(tmp, "out"),
+    "--out",
+    path.join(tmp, "other-out"),
+  ]);
+  assert.notStrictEqual(duplicate.status, 0);
+  assert.match(duplicate.stderr, /duplicate argument: --out/);
+});
+
+test("rejects archive members that are not regular files", (t) => {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "octo-cli-prep-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const distDir = path.join(tmp, "dist");
+  const outDir = path.join(tmp, "out");
+  fs.mkdirSync(distDir, { recursive: true });
+
+  const first = PLATFORMS[0];
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), "octo-cli-symlink-"));
+  fs.symlinkSync("/etc/passwd", path.join(stage, binFileName(first.goOs)));
+  execFileSync("tar", [
+    "-czf",
+    path.join(distDir, `octo-cli_${VERSION}_${first.goOs}_${first.goArch}.tar.gz`),
+    "-C",
+    stage,
+    binFileName(first.goOs),
+  ]);
+  fs.rmSync(stage, { recursive: true, force: true });
+
+  const res = run(["--version", VERSION, "--dist", distDir, "--out", outDir]);
+  assert.notStrictEqual(res.status, 0);
+  assert.match(res.stderr, /non-regular octo-cli/);
+});
+
+test("shim resolves the installed platform package and propagates output", (t) => {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "octo-cli-shim-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  const scopedPkg = shim.platformPackageFor(process.platform, process.arch);
+  assert.ok(scopedPkg, `test host ${process.platform}-${process.arch} must be part of the supported matrix`);
+  const pkg = scopedPkg.replace("@mininglamp-oss/", "");
+
+  const pkgDir = path.join(tmp, "node_modules", "@mininglamp-oss", pkg, "bin");
+  fs.mkdirSync(pkgDir, { recursive: true });
+  const bin = path.join(pkgDir, "octo-cli");
+  fs.writeFileSync(bin, "#!/bin/sh\necho shim-ok \"$@\"\n", { mode: 0o755 });
+
+  const res = spawnSync(process.execPath, [SHIM, "--ping"], {
+    cwd: tmp,
+    env: { ...process.env, NODE_PATH: path.join(tmp, "node_modules") },
+    encoding: "utf8",
+  });
+  assert.strictEqual(res.status, 0, res.stderr);
+  assert.strictEqual(res.stdout.trim(), "shim-ok --ping");
+});
+
+test("shim resolver maps windows packages to the .exe binary", () => {
+  const resolved = shim.resolveBinary("win32", "x64", (specifier) => specifier);
+  assert.strictEqual(resolved, "@mininglamp-oss/octo-cli-win32-x64/bin/octo-cli.exe");
+  assert.strictEqual(shim.binaryNameFor("win32"), "octo-cli.exe");
+  assert.strictEqual(shim.binaryNameFor("linux"), "octo-cli");
+});
+
+test("shim reports a missing platform package", (t) => {
+  const scopedPkg = shim.platformPackageFor(process.platform, process.arch);
+  assert.ok(scopedPkg, `test host ${process.platform}-${process.arch} must be part of the supported matrix`);
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "octo-cli-shim-missing-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(tmp, "node_modules"), { recursive: true });
+
+  const res = spawnSync(process.execPath, [SHIM, "--ping"], {
+    cwd: tmp,
+    env: { ...process.env, NODE_PATH: path.join(tmp, "node_modules") },
+    encoding: "utf8",
+  });
+  assert.strictEqual(res.status, 1);
+  assert.match(res.stderr, new RegExp(`platform package ${scopedPkg} is not installed`));
+  assert.match(res.stderr, /Try reinstalling: npm install -g @mininglamp-oss\/octo-cli/);
+});
+
+test("npm publish helper treats registry 404 as not published", () => {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const workflow = fs.readFileSync(NPM_PUBLISH_YAML, "utf8");
+  const start = workflow.indexOf("          npm_view() {\n");
+  const end = workflow.indexOf('\n          if [ "$DIST_TAG" = "latest" ]; then', start);
+  assert.notStrictEqual(start, -1, "cannot find npm_view helper in npm-publish.yml");
+  assert.notStrictEqual(end, -1, "cannot find helper terminator in npm-publish.yml");
+  const helpers = workflow.slice(start, end).replace(/^ {10}/gm, "");
+
+  const res = spawnSync(
+    "bash",
+    [
+      "-c",
+      `
+set -euo pipefail
+VERSION=9.9.9
+NPM_VIEW_MODE=exists
+
+npm() {
+  if [ "$1" != "view" ]; then
+    echo "unexpected npm command: $*" >&2
+    return 70
+  fi
+  case "$NPM_VIEW_MODE" in
+    exists)
+      printf '9.9.9\\n'
+      return 0
+      ;;
+    missing)
+      printf 'npm ERR! code E404\\n' >&2
+      printf 'npm ERR! 404 Not Found - GET https://registry.npmjs.org/%s - Not found\\n' "$2" >&2
+      return 1
+      ;;
+    hard)
+      printf 'npm ERR! network timeout\\n' >&2
+      return 1
+      ;;
+  esac
+}
+
+sleep() { :; }
+
+${helpers}
+
+NPM_VIEW_MODE=exists
+if ! version_exists "@mininglamp-oss/octo-cli-darwin-arm64"; then
+  echo "expected existing version to return 0" >&2
+  exit 1
+fi
+
+NPM_VIEW_MODE=missing
+if version_exists "@mininglamp-oss/octo-cli-darwin-arm64"; then
+  echo "expected missing version to return 1" >&2
+  exit 1
+fi
+
+NPM_VIEW_MODE=hard
+if (version_exists "@mininglamp-oss/octo-cli-darwin-arm64"); then
+  echo "expected hard npm view failure to exit non-zero" >&2
+  exit 1
+fi
+
+echo helper-ok
+`,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.strictEqual(res.status, 0, res.stderr || res.stdout);
+  assert.match(res.stdout, /helper-ok/);
+});

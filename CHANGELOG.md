@@ -1,0 +1,155 @@
+# Changelog
+
+All notable changes to `octo-cli` are documented in this file.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Changed
+
+- **API base URL precedence** — the active profile's stored `api_base_url` now
+  outranks `OCTO_API_BASE_URL`, which outranks the production default. A stored
+  profile is routed to the origin it was created against even when the
+  environment names another one; environment credentials and profiles without a
+  URL still use the environment value. To move a profile to another gateway, use
+  `octo-cli auth update --api-base-url <origin>`; `--clear-api-base-url` removes
+  the stored origin so the environment or default applies again and reports
+  `api_base_url` as an empty string, keeping the field's string type. `config
+  show` and `auth status` expose the winning layer as `api_base_url_source`;
+  an invalid stored origin returns a structured validation error naming the
+  full `--profile <name> auth update` recovery commands, and conflicting update
+  actions are refused with the same taxonomy.
+- The default build starts with an empty service registry.
+
+### Fixed
+
+- **Numeric text fields** — query flags and multipart scalar fields use plain
+  decimal notation for large and small values while preserving fractions.
+- **Output preflight** — invalid effective output formats and jq parse/compile
+  errors are rejected before requests or local mutations. Compiled jq programs
+  are reused for output; help-only service parents, help and shell completion
+  retain their text output independently of output options. Jq parse and compile
+  failures use static diagnostics without caller-provided identifiers.
+- **Local mutation dry-runs** — `auth login/update/logout` and `skills --install`
+  reject `--dry-run` before reading credentials or changing local files.
+- **`auth status` credential selection** — reports the same credential source,
+  masked token, and effective API origin as ordinary requests, including when
+  environment credentials override stored profiles. Explicit selectors still
+  fail closed; unverified environment Bot IDs remain `robot_id_claimed`.
+- **COS publish lock diagnostics** — cleanup warnings include a safe HTTP
+  status without exposing SDK messages, signed URLs, or credentials. Cleanup
+  failures still preserve the original publication result.
+
+### Removed
+
+- Built-in service specifications, domain-specific workflows and command aliases.
+- Service-specific credential, routing, validation, and output branches.
+- Bundled domain skills and integration guides.
+
+## [0.5.0] — 2026-05-28
+
+### Added
+- **`octo skills` command** for embedded skill discovery — lists or
+  extracts the Agent skills bundled in the binary (`octo-shared`,
+  `octo-messaging`, `octo-files`, `octo-matter`). Useful for agent
+  runtimes that load skills from `octo` at startup. (#16)
+- **Encrypted credential profiles** via `octo auth login | status |
+  logout | list` — bot tokens now live in `~/.octo-cli` (plaintext
+  `config.json` metadata + AES-256-GCM `credentials.enc` token store)
+  keyed by `--profile` / `--bot-id` (env `OCTO_BOT_ID`). `OCTO_BOT_TOKEN`
+  remains a fallback. Each success envelope echoes the active
+  `identity` (`{profile, robot_id, bot_kind, source}`) so agents can
+  detect credential misuse. (#17)
+
+### Changed
+- **Matter domain withheld** behind a new `x-octo-disabled` spec flag —
+  the spec stays embedded (`octo schema matter.*` still introspects it)
+  but the command subtree and the `octo-matter` skill are hidden until
+  the backend Matter API stabilises. Flip the spec flag and the skill
+  frontmatter to re-enable. (#19)
+- **Service-domain parent commands** (`octo thread`, `octo group`,
+  `octo file`, …) now reject unknown subcommands with
+  `unknown subcommand %q for %q` and exit 2 instead of silently printing
+  help and exiting 0. Required by the `thread delete` removal so
+  automation can detect a missing operation; also catches typos like
+  `octo group lisst`. Parent help (`octo thread`, `octo thread --help`)
+  still works without a token; only leaf operations require
+  authentication.
+
+### Removed
+- **`octo thread delete`** — withdrew the thread-deletion command.
+  Threads expose no bot-accessible archive or soft-close path, so a
+  hard delete was inconsistent with the convention that bots get no
+  destructive operations. The backend route is untouched; only the CLI
+  command and its `thread.delete` spec entry are removed.
+
+### Fixed
+- **`octo file presigned`** and other `bot_api` specs realigned with
+  octo-server — `file.presigned` now declares the required `fileSize`
+  query param (previous calls failed with `HTTP 400 fileSize 参数必填`).
+  Several other spec drifts also corrected. (#14)
+- **Auth gate on service parents** no longer fires for parent help or
+  unknown-subcommand handling — the `unknown subcommand` envelope and
+  `octo thread --help` now work without a bot token, restoring the
+  safety property of the `thread delete` removal.
+
+## [0.4.0] — 2026-05
+
+### Architectural overhaul — metadata-driven command tree
+
+This release replaces the hand-written command layer with an auto-generated
+one, redesigns the output contract around a JSON envelope, and adopts
+Factory-based DI throughout.
+
+### Added
+- **Metadata-driven service engine** (`cmd/service`) — every service command
+  is auto-registered at startup from embedded OpenAPI 3.x specs. Adding or
+  changing an endpoint is a spec edit, no Go code change.
+- **Seven domain specs** embedded via `//go:embed`: `matter` (14),
+  `message` (4), `group` (9), `thread` (9), `file` (4), `bot` (6),
+  `event` (2) — 48 operations total.
+- **JSON envelope I/O** (`internal/output`) — stable
+  `{ok, identity, data, _pagination, _rate_limit}` success shape and
+  `{ok:false, error:{type, code, message, hint, detail}}` error shape.
+- **Error taxonomy + exit codes** — `auth_error` → 3, `validation`/`config`
+  → 2, all others → 1.
+- **Factory DI** (`internal/cmdutil.Factory`) — `ConfigFunc`,
+  `CredentialFunc`, `ClientFunc`, `RegistryFunc` accessors; no mutable
+  package-level globals.
+- **Multi-service routing** — each operation selects its base URL from
+  `x-octo-base-url` (matters, dmworkim, or the `OCTO_API_URL` fallback).
+- **Universal flags** — `--format`, `--jq`, `--dry-run`, `--verbose`,
+  `--timeout`, `--no-retry`, `--space`, plus `--page-all` / `--page-limit`
+  on paginated operations.
+- **Retry with exponential backoff + jitter** and `Retry-After` handling
+  (client).
+- **Multipart upload** and **binary/redirect response** handling for the
+  `file.*` operations.
+- **`octo schema` discovery command** — list and inspect the embedded spec
+  registry fully offline.
+- **`octo api` generic passthrough** — raw `METHOD /path` against any
+  configured service.
+- **`octo config show`** — resolved config with the bot token masked.
+- **Agent skills** under `skills/` — `octo-shared`, `octo-matter`,
+  `octo-messaging`, `octo-files` with YAML frontmatter.
+- **Shell completion** via cobra's built-in `completion` command (bash,
+  zsh, fish, powershell).
+- **CI**: gofmt, vet, golangci-lint, `go test -race`, coverage, build,
+  `go mod tidy` drift check, Go 1.24.x.
+
+### Changed
+- **Bot-only identity model.** `OCTO_BOT_TOKEN` carries an `app_*` (App
+  Bot) or `bf_*` (User Bot) token; user login is removed.
+- **Agent-first output.** Default format is `json`; no interactive prompts;
+  stable machine-parseable envelope on every path.
+
+### Removed
+- Legacy hand-written `todo`, `goal`, `assign`, `comment`, and `attachment`
+  subcommand trees. All equivalent functionality is now under `octo matter`
+  and auto-registered from the spec.
+
+[Unreleased]: https://github.com/Mininglamp-OSS/octo-cli/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Mininglamp-OSS/octo-cli/compare/555c959...v0.5.0
+[0.4.0]: https://github.com/Mininglamp-OSS/octo-cli/tree/555c959

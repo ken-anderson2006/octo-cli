@@ -1,0 +1,78 @@
+# GitLab pipeline {{PIPELINE_ID}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: octo-cli-mcp
+  namespace: "{{NAMESPACE}}"
+spec:
+  replicas: {{REPLICAS}}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: octo-cli-mcp
+  template:
+    metadata:
+      annotations: {{POD_ANNOTATIONS}}
+      labels:
+        app.kubernetes.io/name: octo-cli-mcp
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{TERMINATION_GRACE}}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: "{{IMAGE_PULL_SECRET}}"
+      containers:
+        - name: mcp
+          image: "{{IMAGE}}"
+          args:
+            - mcp
+            - serve
+            - --listen=0.0.0.0:8765
+            - --drain-delay={{DRAIN_DELAY}}s
+            - --shutdown-timeout={{SHUTDOWN_TIMEOUT}}s
+          ports:
+            - name: http
+              containerPort: 8765
+          env:
+            - name: OCTO_API_BASE_URL
+              value: "{{OCTO_GATEWAY_URL}}"
+          readinessProbe:
+            httpGet:
+              port: http
+              path: /readyz
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 1
+          resources:
+            requests:
+              cpu: "{{CPU_REQUEST}}"
+              memory: "{{MEMORY_REQUEST}}"
+            limits:
+              cpu: "{{CPU_LIMIT}}"
+              memory: "{{MEMORY_LIMIT}}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: octo-cli-mcp
+  namespace: "{{NAMESPACE}}"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: octo-cli-mcp
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

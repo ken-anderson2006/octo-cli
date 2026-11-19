@@ -1,0 +1,1297 @@
+// Package registry loads OpenAPI operations for command generation and discovery.
+package registry
+
+import (
+	"embed"
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"sort"
+	"strings"
+)
+
+//go:embed specs
+var specsFS embed.FS
+
+// Registry holds the parsed OpenAPI documents keyed by service name.
+// Values are retained as map[string]any rather than strongly-typed structs so
+// the CLI tolerates additive spec changes and unknown x-octo-* extensions
+// without code churn.
+type Registry struct {
+	specs map[string]map[string]any
+}
+
+// New loads and parses every embedded spec. It is not called at init time — the
+// Factory invokes it lazily so tests can construct a Registry directly.
+func New() (*Registry, error) {
+	source, err := fs.Sub(specsFS, "specs")
+	if err != nil {
+		return nil, err
+	}
+	return Load(source)
+}
+
+// Load reads OpenAPI JSON specs from the root of source.
+func Load(source fs.FS) (*Registry, error) {
+	r := &Registry{specs: map[string]map[string]any{}}
+
+	entries, err := fs.ReadDir(source, ".")
+	if err != nil {
+		return nil, fmt.Errorf("registry: read embed fs: %w", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := fs.ReadFile(source, e.Name())
+		if err != nil {
+			return nil, fmt.Errorf("registry: read %s: %w", e.Name(), err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return nil, fmt.Errorf("registry: parse %s: %w", e.Name(), err)
+		}
+		service := serviceName(doc, strings.TrimSuffix(e.Name(), ".json"))
+		if _, dup := r.specs[service]; dup {
+			return nil, fmt.Errorf("registry: duplicate service %q (files %s vs existing)", service, e.Name())
+		}
+		r.specs[service] = doc
+	}
+	if err := checkDuplicateOperationIDs(r.specs); err != nil {
+		return nil, err
+	}
+	for service, doc := range r.specs {
+		if err := validateConditionalQueryMetadata(doc); err != nil {
+			return nil, fmt.Errorf("registry: service %s: %w", service, err)
+		}
+	}
+	return r, nil
+}
+
+// validateConditionalQueryMetadata makes the opt-in extension fail closed at
+// registry load rather than silently weakening a required-parameter guard.
+func validateConditionalQueryMetadata(doc map[string]any) error {
+	var validationErr error
+	walkOperations(doc, func(path, method string, op map[string]any) {
+		if validationErr == nil {
+			validationErr = validateOperationConditionalQueries(doc, path, method, op)
+		}
+	})
+	return validationErr
+}
+
+func validateOperationConditionalQueries(doc map[string]any, path, method string, op map[string]any) error {
+	params := operationParameters(doc, path, op)
+	queryTypes := make(map[string]string, len(params))
+	for i := range params {
+		if params[i].In == "query" {
+			queryTypes[params[i].Name] = params[i].Type
+		}
+	}
+	for _, raw := range rawOperationParameters(doc, path, op) {
+		pm, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		ext, declared := pm["x-octo-required-unless-query"]
+		if !declared {
+			continue
+		}
+		conditional, ok := ext.(map[string]any)
+		name, nameOK := conditional["name"].(string)
+		_, valueOK := conditional["value"].(string)
+		dependent, dependentOK := pm["name"].(string)
+		if !ok || !nameOK || strings.TrimSpace(name) == "" || !valueOK || !dependentOK || dependent == "" {
+			return fmt.Errorf("%s %s has malformed x-octo-required-unless-query", strings.ToUpper(method), path)
+		}
+		peerType, exists := queryTypes[name]
+		if !exists || peerType != "string" || name == dependent {
+			return fmt.Errorf("%s %s conditional query %q must name a distinct string query parameter", strings.ToUpper(method), path, name)
+		}
+	}
+	return nil
+}
+
+func rawOperationParameters(doc map[string]any, path string, op map[string]any) []any {
+	var result []any
+	if paths, ok := doc["paths"].(map[string]any); ok {
+		if item, ok := paths[path].(map[string]any); ok {
+			if params, ok := item["parameters"].([]any); ok {
+				result = append(result, params...)
+			}
+		}
+	}
+	if params, ok := op["parameters"].([]any); ok {
+		result = append(result, params...)
+	}
+	return result
+}
+
+func checkDuplicateOperationIDs(specs map[string]map[string]any) error {
+	owner := map[string]string{}
+	services := make([]string, 0, len(specs))
+	for s := range specs {
+		services = append(services, s)
+	}
+	sort.Strings(services)
+	for _, service := range services {
+		var dupErr error
+		walkOperations(specs[service], func(_, _ string, op map[string]any) {
+			id, _ := op["operationId"].(string)
+			if id == "" || dupErr != nil {
+				return
+			}
+			if prev, dup := owner[id]; dup {
+				dupErr = fmt.Errorf("registry: duplicate operationId %q (services %q and %q)", id, prev, service)
+				return
+			}
+			owner[id] = service
+		})
+		if dupErr != nil {
+			return dupErr
+		}
+	}
+	return nil
+}
+
+// MustNew is like New but panics on error — useful for package-level wiring
+// where a malformed embedded spec is a build-time bug, not a runtime condition.
+func MustNew() *Registry {
+	r, err := New()
+	if err != nil {
+		panic(err)
+	}
+	return r
+}
+
+// ListServices returns the sorted set of service names.
+func (r *Registry) ListServices() []string {
+	out := make([]string, 0, len(r.specs))
+	for s := range r.specs {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// GetSpec returns the raw parsed document for a service, or nil if unknown.
+func (r *Registry) GetSpec(service string) map[string]any {
+	return r.specs[service]
+}
+
+// ServiceDisabled reports the x-octo-disabled extension for a service.
+// Disabled services stay loaded — so schema lookups and the metadata-driven
+// engine still see them — but are withheld from the command tree and the
+// global discovery listing. Flip the flag in the spec to re-enable.
+//
+// The flag is truthy as either a JSON boolean (`true`) or the string
+// `"true"`, matching the skill frontmatter convention so the two surfaces
+// can't drift. ListServices / ListAllOperations are deliberately NOT filtered
+// — use EnabledServices / EnabledOperations for a caller-facing view.
+func (r *Registry) ServiceDisabled(service string) bool {
+	return truthy(r.specs[service]["x-octo-disabled"])
+}
+
+// EnabledServices is ListServices minus any service whose spec sets
+// x-octo-disabled. This is the single source of truth for "what callers
+// should see" — command registration and global discovery both use it so the
+// filter can't be forgotten at one site and applied at another.
+func (r *Registry) EnabledServices() []string {
+	all := r.ListServices()
+	out := make([]string, 0, len(all))
+	for _, s := range all {
+		if !r.ServiceDisabled(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// EnabledOperations is ListAllOperations minus operations belonging to a
+// disabled service.
+func (r *Registry) EnabledOperations() []OperationInfo {
+	all := r.ListAllOperations()
+	out := make([]OperationInfo, 0, len(all))
+	for _, op := range all {
+		if !r.ServiceDisabled(op.Service) {
+			out = append(out, op)
+		}
+	}
+	return out
+}
+
+// OperationInfo is the summary view of an operation — what ListOperations
+// and ListAllOperations return. It carries the identifiers and metadata
+// needed to route to and describe the operation without loading its full
+// parameter / schema detail. Use GetOperation for the expanded view.
+type OperationInfo struct {
+	ID          string `json:"id"`
+	Service     string `json:"service"`
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	Summary     string `json:"summary,omitempty"`
+	Description string `json:"description,omitempty"`
+	Risk        string `json:"risk,omitempty"`
+}
+
+// ConditionalQueryRequirement describes x-octo-required-unless-query: the
+// parameter carrying it is required unless the named peer query equals Value.
+type ConditionalQueryRequirement struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// ParamInfo describes a single parameter on a path or operation (one entry in
+// an OpenAPI `parameters` array). Covers path, query, and header parameters;
+// the `In` field records which. Type/Default/Enum come from the nested
+// schema when present.
+type ParamInfo struct {
+	Name        string      `json:"name"`
+	In          string      `json:"in"`
+	Required    bool        `json:"required,omitempty"`
+	Type        string      `json:"type,omitempty"`
+	Format      string      `json:"format,omitempty"`
+	Items       *SchemaInfo `json:"items,omitempty"`
+	Description string      `json:"description,omitempty"`
+	Default     any         `json:"default,omitempty"`
+	Enum        []any       `json:"enum,omitempty"`
+	Minimum     *float64    `json:"minimum,omitempty"`
+	Maximum     *float64    `json:"maximum,omitempty"`
+	// String constraints are exposed for schema inspection.
+	MinLength int    `json:"min_length,omitempty"`
+	MaxLength int    `json:"max_length,omitempty"`
+	Pattern   string `json:"pattern,omitempty"`
+	// RequiredUnlessQuery makes an otherwise optional query parameter required
+	// unless another query parameter equals the declared value. It is populated
+	// by x-octo-required-unless-query.
+	RequiredUnlessQuery *ConditionalQueryRequirement `json:"required_unless_query,omitempty"`
+	// Secret records the x-octo-secret extension. A secret parameter's value is
+	// masked in --verbose traces and --dry-run output.
+	Secret bool `json:"secret,omitempty"`
+	// FlagName is the optional CLI flag override from the x-octo-flag
+	// extension on the parameter. It lets a spec expose a header/query param
+	// whose wire name is awkward as a flag (e.g. the `If-Match` header) under a
+	// clean, first-class flag name (e.g. `base-version`) without a hard-coded
+	// carve-out in the engine. Empty when the spec does not set it, in which
+	// case the engine derives the flag from Name.
+	//
+	// On a `"in": "path"` parameter it means something slightly different: the
+	// param stays positional, and the flag becomes an OPTIONAL alternative way
+	// to supply it. That is the escape hatch for a value cobra cannot accept
+	// positionally at all — a base64url id starting with "-" is parsed as a flag
+	// before the command runs (see cmd/service.pathFlag).
+	FlagName string `json:"flag_name,omitempty"`
+	// PositionalName is the CLI operand label from x-octo-positional. The
+	// parameter's Name remains its wire key.
+	PositionalName string `json:"positional_name,omitempty"`
+}
+
+// SchemaInfo is a trimmed projection of an OpenAPI schema — just enough for
+// the schema command and generic request validator. It resolves bounded local
+// references, nullable type unions, and composition constraints while leaving
+// an unresolved `$ref` visible when the depth guard is reached.
+type SchemaInfo struct {
+	Type string `json:"type,omitempty"`
+	// Nullable records whether the schema's type explicitly includes null.
+	// Other constraints, such as enum and const, still apply to null.
+	Nullable             bool                  `json:"nullable,omitempty"`
+	Required             []string              `json:"required,omitempty"`
+	Properties           map[string]SchemaInfo `json:"properties,omitempty"`
+	AdditionalProperties *bool                 `json:"additional_properties,omitempty"`
+	Items                *SchemaInfo           `json:"items,omitempty"`
+	OneOf                []SchemaInfo          `json:"one_of,omitempty"`
+	AnyOf                []SchemaInfo          `json:"any_of,omitempty"`
+	Enum                 []any                 `json:"enum,omitempty"`
+	// EnumHint is an opt-in x-octo-enum-hint for request-body enum errors.
+	EnumHint    string `json:"enum_hint,omitempty"`
+	Const       any    `json:"const,omitempty"`
+	Default     any    `json:"-"`
+	Format      string `json:"format,omitempty"`
+	Description string `json:"description,omitempty"`
+	WriteOnly   bool   `json:"write_only,omitempty"`
+	// These constraints are surfaced for schema introspection. The generic CLI
+	// validator enforces Required, MinItems and Enum. Strict request validation
+	// also enforces closed objects, minimum property counts and length limits.
+	Minimum       *float64 `json:"minimum,omitempty"`
+	Maximum       *float64 `json:"maximum,omitempty"`
+	MinLength     int      `json:"min_length,omitempty"`
+	MaxLength     int      `json:"max_length,omitempty"`
+	MinItems      int      `json:"min_items,omitempty"`
+	MaxItems      int      `json:"max_items,omitempty"`
+	MinProperties int      `json:"min_properties,omitempty"`
+	Pattern       string   `json:"pattern,omitempty"`
+	Ref           string   `json:"$ref,omitempty"`
+	// FlagName is the optional CLI flag override from the x-octo-flag extension
+	// on a request-body property, mirroring ParamInfo.FlagName for query/header
+	// params. It lets a promoted body field expose a clean flag name (e.g.
+	// --scope) while the wire body key stays the property name (e.g. shareScope),
+	// so the CLI can honour a caller-facing flag without diverging from the
+	// byte-exact backend contract. Empty means "derive from the property name".
+	FlagName string `json:"flag_name,omitempty"`
+	// Secret records the x-octo-secret extension on a request-body property,
+	// mirroring ParamInfo.Secret. Its value is masked in --verbose traces and
+	// --dry-run output.
+	Secret bool `json:"secret,omitempty"`
+}
+
+// PaginationInfo captures the `x-octo-pagination` extension. It tells the
+// service engine which query/body parameters carry the cursor / limit and
+// which response paths carry the items / next cursor / optional has-more flag,
+// so `--page-all` can walk pages without operation-specific code.
+type PaginationInfo struct {
+	CursorParam         string `json:"cursor_param,omitempty"`
+	LimitParam          string `json:"limit_param,omitempty"`
+	ItemsField          string `json:"items_field,omitempty"`
+	CursorField         string `json:"cursor_field,omitempty"`
+	HasMoreField        string `json:"has_more_field,omitempty"`
+	InferHasMore        bool   `json:"infer_has_more,omitempty"`
+	RejectCursorRepeats bool   `json:"reject_cursor_repeats,omitempty"`
+}
+
+// BodyVariant declares one valid conditional request-body shape.
+type BodyVariant struct {
+	Name      string   `json:"name,omitempty"`
+	Required  []string `json:"required,omitempty"`
+	Forbidden []string `json:"forbidden,omitempty"`
+}
+
+// OperationDetail is the expanded view of a single operation returned by
+// GetOperation. It embeds OperationInfo for identity/summary and adds every
+// piece of metadata the service engine needs to build a complete cobra
+// command: parameters, request/response schemas, pagination, base-URL
+// routing, space-header behaviour, and payload shape flags (multipart /
+// binary response).
+type OperationDetail struct {
+	OperationInfo
+	Parameters          []ParamInfo `json:"parameters,omitempty"`
+	RequestBody         *SchemaInfo `json:"request_body,omitempty"`
+	RequestBodyRequired bool        `json:"request_body_required,omitempty"`
+	ResponseSchema      *SchemaInfo `json:"response_schema,omitempty"`
+	// StrictRequestSchema opts a service or individual operation into the extended JSON Schema request
+	// checks such as closed objects, lengths, patterns, and size constraints.
+	StrictResponseSchema bool            `json:"strict_response_schema,omitempty"`
+	StrictRequestSchema  bool            `json:"strict_request_schema,omitempty"`
+	Pagination           *PaginationInfo `json:"pagination,omitempty"`
+	SpaceHeader          bool            `json:"space_header,omitempty"`
+	// SpaceHeaderSet records whether the spec declared x-octo-space-header at
+	// all. It lets the transport distinguish an explicit `false` (suppress the
+	// X-Space-Id header) from an omitted flag (keep the default behaviour of
+	// sending it when the credential carries a space).
+	SpaceHeaderSet bool `json:"space_header_set,omitempty"`
+	Multipart      bool `json:"multipart,omitempty"`
+	BinaryResponse bool `json:"binary_response,omitempty"`
+	// DataEnvelope identifies success responses with data and optional pagination.
+	DataEnvelope bool `json:"data_envelope,omitempty"`
+	// BinaryBody is true only when the operation delivers a binary body inline
+	// on a 2xx success (declared via a 2xx response with a content body), so
+	// the CLI can write those bytes to disk with --output/-o. It is false for
+	// redirect-only binary operations, which return no body to write.
+	BinaryBody bool `json:"binary_body,omitempty"`
+	// RetryMode captures the optional x-octo-retry operation extension. Empty
+	// keeps the transport default; "never" disables automatic retries for the
+	// individual request. This is required for non-idempotent external side
+	// effects where a lost response must be reported as an
+	// unknown result rather than risking a duplicate action.
+	RetryMode string `json:"retry_mode,omitempty"`
+	// MountByTokenKind retains legacy mounts for matching raw API paths to
+	// redaction metadata.
+	MountByTokenKind map[string]string `json:"-"`
+	// ResponseFieldAliases captures x-octo-response-fields: source key →
+	// target keys. The CLI renames (one target) or duplicates (several) the
+	// value in the response before emitting it. Paths use the same syntax as LosslessIDFields.
+	ResponseFieldAliases map[string][]string `json:"response_field_aliases,omitempty"`
+	// LosslessIDFields captures x-octo-lossless-id-fields: response paths whose
+	// uint64 ids are emitted as decimal strings so values above 2^53 survive an
+	// Agent's JSON parser. Applied after ResponseFieldAliases, so paths name
+	// post-alias keys.
+	LosslessIDFields []string `json:"lossless_id_fields,omitempty"`
+	// ResponseSecretFields lists response-schema paths marked x-octo-secret.
+	// The client uses these paths to collect actual secret values from a
+	// backend error body before parsing or rendering it.
+	ResponseSecretFields []string      `json:"response_secret_fields,omitempty"`
+	BodyVariants         []BodyVariant `json:"body_variants,omitempty"`
+	// BodyVariantsHint is the operation-specific recovery guidance returned
+	// when no declared request-body variant matches.
+	BodyVariantsHint string `json:"body_variants_hint,omitempty"`
+	// AutoIdempotencyKey names a request field generated once per command run when absent.
+	AutoIdempotencyKey string `json:"auto_idempotency_key,omitempty"`
+	// ResponseUnwrap selects a dot-separated field from successful JSON responses.
+	ResponseUnwrap string `json:"response_unwrap,omitempty"`
+	// UnwrapRequiredFields lists the properties the 2xx schema declares required
+	// under ResponseUnwrap. Non-empty means the unwrapped value must be an
+	// object, so a null or scalar cannot be reported as success.
+	UnwrapRequiredFields []string `json:"unwrap_required_fields,omitempty"`
+}
+
+// ListOperations returns every operation for a service, sorted by operationId.
+// A missing/unknown service yields an empty slice (not an error).
+func (r *Registry) ListOperations(service string) []OperationInfo {
+	doc := r.specs[service]
+	if doc == nil {
+		return nil
+	}
+	out := []OperationInfo{}
+	walkOperations(doc, func(pathStr, method string, op map[string]any) {
+		if truthy(op["x-octo-cli-hidden"]) {
+			return
+		}
+		id, _ := op["operationId"].(string)
+		if id == "" {
+			return
+		}
+		out = append(out, OperationInfo{
+			ID:          id,
+			Service:     service,
+			Method:      strings.ToUpper(method),
+			Path:        pathStr,
+			Summary:     stringOf(op["summary"]),
+			Description: stringOf(op["description"]),
+			Risk:        stringOf(op["x-octo-risk"]),
+		})
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// ListAllOperations returns operations across all services, sorted by
+// service then operationId.
+func (r *Registry) ListAllOperations() []OperationInfo {
+	var all []OperationInfo
+	for _, s := range r.ListServices() {
+		all = append(all, r.ListOperations(s)...)
+	}
+	return all
+}
+
+// GetOperation finds an operation by its operationId. Returns ok=false when
+// not found.
+func (r *Registry) GetOperation(operationID string) (*OperationDetail, bool) {
+	for service, doc := range r.specs {
+		var found *OperationDetail
+		walkOperations(doc, func(pathStr, method string, op map[string]any) {
+			if found != nil {
+				return
+			}
+			if truthy(op["x-octo-cli-hidden"]) {
+				return
+			}
+			id, _ := op["operationId"].(string)
+			if id != operationID {
+				return
+			}
+			found = buildDetail(service, doc, pathStr, method, op)
+		})
+		if found != nil {
+			return found, true
+		}
+	}
+	return nil, false
+}
+
+// --- internals ---
+
+var httpMethods = []string{"get", "put", "post", "delete", "patch", "options", "head"}
+
+func walkOperations(doc map[string]any, fn func(path, method string, op map[string]any)) {
+	paths, ok := doc["paths"].(map[string]any)
+	if !ok {
+		return
+	}
+	// Sort paths for deterministic iteration order.
+	keys := make([]string, 0, len(paths))
+	for k := range paths {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, p := range keys {
+		item, ok := paths[p].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, m := range httpMethods {
+			op, ok := item[m].(map[string]any)
+			if !ok {
+				continue
+			}
+			fn(p, m, op)
+		}
+	}
+}
+
+func buildDetail(service string, doc map[string]any, pathStr, method string, op map[string]any) *OperationDetail {
+	d := &OperationDetail{
+		OperationInfo: OperationInfo{
+			ID:          stringOf(op["operationId"]),
+			Service:     service,
+			Method:      strings.ToUpper(method),
+			Path:        pathStr,
+			Summary:     stringOf(op["summary"]),
+			Description: stringOf(op["description"]),
+			Risk:        stringOf(op["x-octo-risk"]),
+		},
+		SpaceHeader:          boolOf(doc["x-octo-space-header"]),
+		DataEnvelope:         boolOf(doc["x-octo-data-envelope"]),
+		StrictResponseSchema: truthy(op["x-octo-strict-response-schema"]),
+		StrictRequestSchema:  truthy(doc["x-octo-strict-request-schema"]) || truthy(op["x-octo-strict-request-schema"]),
+	}
+	_, d.SpaceHeaderSet = doc["x-octo-space-header"]
+
+	d.Multipart = boolOf(op["x-octo-multipart"])
+	d.BinaryResponse = boolOf(op["x-octo-binary-response"])
+	d.RetryMode = stringOf(op["x-octo-retry"])
+	d.MountByTokenKind = stringMapOf(doc["x-octo-mount-by-token-kind"])
+	d.ResponseFieldAliases = stringSliceMapOf(op["x-octo-response-fields"])
+	d.LosslessIDFields = stringSliceOf(op["x-octo-lossless-id-fields"])
+	unwrap, operationUnwrapSet := op["x-octo-response-unwrap"]
+	d.ResponseUnwrap = stringOf(unwrap)
+	if !operationUnwrapSet {
+		d.ResponseUnwrap = stringOf(doc["x-octo-response-unwrap"])
+	}
+	if d.ResponseUnwrap != "" {
+		d.UnwrapRequiredFields = unwrapRequiredFields(doc, op, d.ResponseUnwrap)
+	}
+	d.AutoIdempotencyKey = stringOf(op["x-octo-auto-idempotency-key"])
+	d.BodyVariantsHint = stringOf(op["x-octo-body-variants-hint"])
+	if variants, ok := op["x-octo-body-variants"].([]any); ok {
+		for _, raw := range variants {
+			variant, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			d.BodyVariants = append(d.BodyVariants, BodyVariant{
+				Name: stringOf(variant["name"]), Required: stringsOf(variant["required"]), Forbidden: stringsOf(variant["forbidden"]),
+			})
+		}
+	}
+	if d.BinaryResponse {
+		if resps, ok := op["responses"].(map[string]any); ok {
+			d.BinaryBody = hasSuccessBody(doc, resps)
+		}
+	}
+
+	d.Parameters = operationParameters(doc, pathStr, op)
+	d.RequestBody, d.RequestBodyRequired = operationRequestBody(doc, op)
+
+	if resps, ok := op["responses"].(map[string]any); ok {
+		d.ResponseSchema = firstSuccessSchema(doc, resps)
+		d.ResponseSecretFields = responseSecretFields(d.ResponseSchema)
+	}
+
+	if pag, ok := op["x-octo-pagination"].(map[string]any); ok {
+		d.Pagination = &PaginationInfo{
+			CursorParam:         stringOf(pag["cursorParam"]),
+			LimitParam:          stringOf(pag["limitParam"]),
+			ItemsField:          stringOf(pag["itemsField"]),
+			CursorField:         stringOf(pag["cursorField"]),
+			HasMoreField:        stringOf(pag["hasMoreField"]),
+			InferHasMore:        truthy(pag["inferHasMore"]),
+			RejectCursorRepeats: truthy(pag["rejectCursorRepeats"]),
+		}
+	}
+
+	return d
+}
+
+func responseSecretFields(schema *SchemaInfo) []string {
+	if schema == nil {
+		return nil
+	}
+	var fields []string
+	collectResponseSecretFields(schema, "", &fields)
+	sort.Strings(fields)
+	return fields
+}
+
+func collectResponseSecretFields(schema *SchemaInfo, path string, fields *[]string) {
+	if schema == nil {
+		return
+	}
+	names := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		child := schema.Properties[name]
+		childPath := name
+		if path != "" {
+			childPath = path + "." + name
+		}
+		if child.Secret {
+			*fields = append(*fields, childPath)
+		}
+		collectResponseSecretFields(&child, childPath, fields)
+	}
+	if schema.Items != nil {
+		collectResponseSecretFields(schema.Items, path+"[]", fields)
+	}
+	for i := range schema.OneOf {
+		collectResponseSecretFields(&schema.OneOf[i], path, fields)
+	}
+	for i := range schema.AnyOf {
+		collectResponseSecretFields(&schema.AnyOf[i], path, fields)
+	}
+}
+
+func operationParameters(doc map[string]any, pathStr string, op map[string]any) []ParamInfo {
+	// OpenAPI allows parameters shared by every operation on a path to be
+	// declared on the Path Item Object. Operation-level parameters are merged
+	// afterwards and override a path-level parameter with the same name and
+	// location (OpenAPI 3.1 section 4.8.12.1).
+	var pathParams []any
+	if paths, ok := doc["paths"].(map[string]any); ok {
+		if pathItem, ok := paths[pathStr].(map[string]any); ok {
+			pathParams, _ = pathItem["parameters"].([]any)
+		}
+	}
+	opParams, _ := op["parameters"].([]any)
+
+	result := make([]ParamInfo, 0, len(pathParams)+len(opParams))
+	indexes := make(map[string]int, len(pathParams)+len(opParams))
+	appendParams := func(params []any) {
+		for _, raw := range params {
+			pm, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if ref := stringOf(pm["$ref"]); ref != "" {
+				pm = followComponentRef(doc, ref, "parameters")
+				if pm == nil {
+					continue
+				}
+			}
+			parameter := ParamInfo{
+				Name:           stringOf(pm["name"]),
+				In:             stringOf(pm["in"]),
+				Required:       boolOf(pm["required"]),
+				Description:    stringOf(pm["description"]),
+				FlagName:       stringOf(pm["x-octo-flag"]),
+				PositionalName: stringOf(pm["x-octo-positional"]),
+				Secret:         truthy(pm["x-octo-secret"]),
+			}
+			if conditional, ok := pm["x-octo-required-unless-query"].(map[string]any); ok {
+				name, value := stringOf(conditional["name"]), stringOf(conditional["value"])
+				if name != "" {
+					parameter.RequiredUnlessQuery = &ConditionalQueryRequirement{Name: name, Value: value}
+				}
+			}
+			if schema, ok := pm["schema"].(map[string]any); ok {
+				parameter.Type = stringOf(schema["type"])
+				parameter.Format = stringOf(schema["format"])
+				parameter.Default = schema["default"]
+				if items, ok := schema["items"].(map[string]any); ok {
+					resolved := resolveSchema(doc, items)
+					parameter.Items = &resolved
+				}
+				if enum, ok := schema["enum"].([]any); ok {
+					parameter.Enum = enum
+				}
+				parameter.Minimum = numericBound(schema["minimum"])
+				parameter.Maximum = numericBound(schema["maximum"])
+				parameter.MinLength = intOf(schema["minLength"])
+				parameter.MaxLength = intOf(schema["maxLength"])
+				parameter.Pattern = stringOf(schema["pattern"])
+			}
+			name := parameter.Name
+			if strings.EqualFold(parameter.In, "header") {
+				name = strings.ToLower(name)
+			}
+			key := strings.ToLower(parameter.In) + "\x00" + name
+			if index, exists := indexes[key]; exists {
+				result[index] = parameter
+				continue
+			}
+			indexes[key] = len(result)
+			result = append(result, parameter)
+		}
+	}
+	appendParams(pathParams)
+	appendParams(opParams)
+	return result
+}
+
+func operationRequestBody(doc, op map[string]any) (*SchemaInfo, bool) {
+	body, ok := op["requestBody"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	if ref := stringOf(body["$ref"]); ref != "" {
+		body = followComponentRef(doc, ref, "requestBodies")
+		if body == nil {
+			return nil, false
+		}
+	}
+	required := boolOf(body["required"])
+	if schema := extractJSONSchema(body); schema != nil {
+		resolved := resolveSchema(doc, schema)
+		return &resolved, required
+	}
+	return nil, required
+}
+
+func extractJSONSchema(body map[string]any) map[string]any {
+	content, ok := body["content"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	// Prefer application/json; fall back to first entry.
+	if mt, ok := content["application/json"].(map[string]any); ok {
+		if s, ok := mt["schema"].(map[string]any); ok {
+			return s
+		}
+	}
+	for _, v := range content {
+		mt, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if s, ok := mt["schema"].(map[string]any); ok {
+			return s
+		}
+	}
+	return nil
+}
+
+// hasSuccessBody reports whether any 2xx response declares a content body,
+// i.e. the operation returns bytes inline on success rather
+// than a bodyless redirect (file.download's 302-only). It gates the --output/-o
+// flag so -o is offered only where it can actually write something.
+//
+// A 2xx entry may either inline the response object or factor it out via
+// {"$ref": "#/components/responses/..."}. Both are handled: a response-level
+// $ref is resolved through components.responses before the content check, so a
+// spec that shares its success response does not fail-closed and silently drop
+// -o. Only one hop is followed (OpenAPI response objects do not chain refs); an
+// unresolvable ref is treated as "no body".
+
+// unwrapRequiredFields reports the properties the operation's 2xx JSON schema
+// declares required for the value that survives unwrapping. The specs describe
+// the post-unwrap shape (required sits at the schema root, not under the unwrap
+// path), so the path is only descended when the schema actually models the
+// envelope. Callers use a non-empty result to refuse a null or scalar value.
+func unwrapRequiredFields(doc, op map[string]any, path string) []string {
+	resps, ok := op["responses"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	schema := ResponsePayloadSchema(firstSuccessSchema(doc, resps), path)
+	if schema == nil {
+		return nil
+	}
+	return append([]string(nil), schema.Required...)
+}
+
+// ResponsePayloadSchema descends only when the schema models the envelope.
+// A payload property matching the unwrap path is ambiguous; such a spec must
+// declare x-octo-response-unwrap-required explicitly. Current specs do not collide.
+func ResponsePayloadSchema(schema *SchemaInfo, path string) *SchemaInfo {
+	if schema == nil || path == "" {
+		return schema
+	}
+	for _, part := range strings.Split(path, ".") {
+		next, ok := schema.Properties[part]
+		if !ok {
+			break
+		}
+		schema = &next
+	}
+	return schema
+}
+
+func hasSuccessBody(doc, resps map[string]any) bool {
+	for code, r := range resps {
+		if !strings.HasPrefix(code, "2") {
+			continue
+		}
+		rm, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		if ref, ok := rm["$ref"].(string); ok && ref != "" {
+			resolved := followResponseRef(doc, ref)
+			if resolved == nil {
+				continue
+			}
+			rm = resolved
+		}
+		if content, ok := rm["content"].(map[string]any); ok && len(content) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// followResponseRef resolves a `#/components/responses/<name>` pointer to its
+// response object. It returns nil for any other ref shape or an unknown name.
+func followResponseRef(doc map[string]any, ref string) map[string]any {
+	return followComponentRef(doc, ref, "responses")
+}
+
+func followComponentRef(doc map[string]any, ref, section string) map[string]any {
+	prefix := "#/components/" + section + "/"
+	if !strings.HasPrefix(ref, prefix) {
+		return nil
+	}
+	name := strings.TrimPrefix(ref, prefix)
+	comps, ok := doc["components"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	entries, ok := comps[section].(map[string]any)
+	if !ok {
+		return nil
+	}
+	s, _ := entries[name].(map[string]any)
+	return s
+}
+
+func firstSuccessSchema(doc, resps map[string]any) *SchemaInfo {
+	// Prefer 200, then 201, then anything 2xx.
+	order := []string{"200", "201", "204"}
+	for _, code := range order {
+		if r, ok := resps[code].(map[string]any); ok {
+			if ref := stringOf(r["$ref"]); ref != "" {
+				r = followResponseRef(doc, ref)
+			}
+			if s := extractJSONSchema(r); s != nil {
+				resolved := resolveSchema(doc, s)
+				return &resolved
+			}
+			// A valid success status may document only a description (for
+			// example an idempotent 200 replay). Keep looking for another 2xx
+			// response that carries the shared success schema.
+			continue
+		}
+	}
+	for code, r := range resps {
+		if !strings.HasPrefix(code, "2") {
+			continue
+		}
+		if rm, ok := r.(map[string]any); ok {
+			if ref := stringOf(rm["$ref"]); ref != "" {
+				rm = followResponseRef(doc, ref)
+			}
+			if s := extractJSONSchema(rm); s != nil {
+				resolved := resolveSchema(doc, s)
+				return &resolved
+			}
+		}
+	}
+	return nil
+}
+
+// resolveSchema performs a bounded walk of a schema node. The budget counts
+// followed references rather than ordinary property/item nesting, so deeply
+// nested acyclic schemas remain enforceable while recursive component models
+// still terminate with an unresolved `$ref`.
+func resolveSchema(doc, s map[string]any) SchemaInfo {
+	return resolveSchemaWithDepth(doc, s, 0)
+}
+
+func resolveSchemaWithDepth(doc, s map[string]any, depth int) SchemaInfo {
+	if s == nil {
+		return SchemaInfo{}
+	}
+	if resolved, ok := resolveSchemaReference(doc, s, depth); ok {
+		return resolved
+	}
+
+	info := schemaInfoFromNode(s)
+	mergeAllOfSchemas(&info, doc, s["allOf"], depth)
+	appendSchemaRequired(&info, s["required"])
+	appendSchemaProperties(&info, doc, s["properties"], depth)
+	appendSchemaItems(&info, doc, s["items"], depth)
+	info.OneOf = resolveSchemaAlternatives(doc, s["oneOf"], depth)
+	info.AnyOf = resolveSchemaAlternatives(doc, s["anyOf"], depth)
+	return info
+}
+
+func resolveSchemaReference(doc, schema map[string]any, depth int) (SchemaInfo, bool) {
+	ref, ok := schema["$ref"].(string)
+	if !ok || ref == "" {
+		return SchemaInfo{}, false
+	}
+	if depth < 3 {
+		if resolved := followRef(doc, ref); resolved != nil {
+			return resolveSchemaWithDepth(doc, resolved, depth+1), true
+		}
+	}
+	return SchemaInfo{Ref: ref}, true
+}
+
+func schemaInfoFromNode(schema map[string]any) SchemaInfo {
+	info := SchemaInfo{
+		Type:          schemaType(schema["type"]),
+		Nullable:      schemaIncludesNullType(schema["type"]),
+		Format:        stringOf(schema["format"]),
+		Description:   stringOf(schema["description"]),
+		EnumHint:      stringOf(schema["x-octo-enum-hint"]),
+		FlagName:      stringOf(schema["x-octo-flag"]),
+		Secret:        truthy(schema["x-octo-secret"]),
+		WriteOnly:     boolOf(schema["writeOnly"]),
+		Default:       schema["default"],
+		MinLength:     intOf(schema["minLength"]),
+		MaxLength:     intOf(schema["maxLength"]),
+		MinItems:      intOf(schema["minItems"]),
+		MaxItems:      intOf(schema["maxItems"]),
+		MinProperties: intOf(schema["minProperties"]),
+		Pattern:       stringOf(schema["pattern"]),
+	}
+
+	info.Minimum = numericBound(schema["minimum"])
+	info.Maximum = numericBound(schema["maximum"])
+	if allowed, ok := schema["additionalProperties"].(bool); ok {
+		info.AdditionalProperties = &allowed
+	}
+	// A schema-valued additionalProperties declaration describes allowed
+	// dynamic values. Treat it as open until the validator can retain that
+	// nested schema instead of incorrectly rejecting every dynamic key.
+	if value, ok := schema["const"]; ok {
+		info.Const = value
+	}
+	if enum, ok := schema["enum"].([]any); ok {
+		info.Enum = enum
+	}
+	return info
+}
+
+func numericBound(value any) *float64 {
+	if bound, ok := value.(float64); ok {
+		return &bound
+	}
+	return nil
+}
+
+func schemaIncludesNullType(value any) bool {
+	switch types := value.(type) {
+	case string:
+		return types == "null"
+	case []any:
+		for _, typ := range types {
+			if name, ok := typ.(string); ok && name == "null" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func mergeAllOfSchemas(dst *SchemaInfo, doc map[string]any, value any, depth int) {
+	allOf, ok := value.([]any)
+	if !ok {
+		return
+	}
+	for _, candidate := range allOf {
+		if sub, ok := candidate.(map[string]any); ok {
+			resolved := resolveSchemaWithDepth(doc, sub, depth)
+			mergeSchemaInfo(dst, &resolved)
+		}
+	}
+}
+
+func appendSchemaRequired(dst *SchemaInfo, value any) {
+	required, ok := value.([]any)
+	if !ok {
+		return
+	}
+	for _, candidate := range required {
+		if name, ok := candidate.(string); ok {
+			dst.Required = appendUniqueStrings(dst.Required, name)
+		}
+	}
+}
+
+func appendSchemaProperties(dst *SchemaInfo, doc map[string]any, value any, depth int) {
+	properties, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	if dst.Properties == nil {
+		dst.Properties = map[string]SchemaInfo{}
+	}
+	for name, candidate := range properties {
+		if sub, ok := candidate.(map[string]any); ok {
+			dst.Properties[name] = resolveSchemaWithDepth(doc, sub, depth)
+		}
+	}
+}
+
+func appendSchemaItems(dst *SchemaInfo, doc map[string]any, value any, depth int) {
+	items, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	resolved := resolveSchemaWithDepth(doc, items, depth)
+	dst.Items = &resolved
+}
+
+func schemaType(value any) string {
+	if single, ok := value.(string); ok {
+		return single
+	}
+	union, ok := value.([]any)
+	if !ok {
+		return ""
+	}
+	for _, candidate := range union {
+		if typ, ok := candidate.(string); ok && typ != "null" {
+			return typ
+		}
+	}
+	return ""
+}
+
+func resolveSchemaAlternatives(doc map[string]any, value any, depth int) []SchemaInfo {
+	alternatives, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	resolved := make([]SchemaInfo, 0, len(alternatives))
+	for _, candidate := range alternatives {
+		if sub, ok := candidate.(map[string]any); ok {
+			resolved = append(resolved, resolveSchemaWithDepth(doc, sub, depth))
+		}
+	}
+	return resolved
+}
+
+func mergeSchemaInfo(dst, src *SchemaInfo) {
+	mergeSchemaIdentity(dst, src)
+	mergeSchemaCollections(dst, src)
+	mergeSchemaConstraints(dst, src)
+}
+
+func mergeSchemaIdentity(dst, src *SchemaInfo) {
+	if src.Type != "" {
+		if dst.Type == "" {
+			dst.Type = src.Type
+			dst.Nullable = src.Nullable
+		} else {
+			dst.Nullable = dst.Nullable && src.Nullable
+		}
+	}
+	if dst.Format == "" {
+		dst.Format = src.Format
+	}
+	if dst.Description == "" {
+		dst.Description = src.Description
+	}
+	if dst.EnumHint == "" {
+		dst.EnumHint = src.EnumHint
+	}
+	if dst.FlagName == "" {
+		dst.FlagName = src.FlagName
+	}
+	dst.WriteOnly = dst.WriteOnly || src.WriteOnly
+	if dst.Const == nil {
+		dst.Const = src.Const
+	}
+	if dst.Default == nil {
+		dst.Default = src.Default
+	}
+}
+
+func mergeSchemaCollections(dst, src *SchemaInfo) {
+	dst.Required = appendUniqueStrings(dst.Required, src.Required...)
+	if len(src.Properties) > 0 {
+		if dst.Properties == nil {
+			dst.Properties = map[string]SchemaInfo{}
+		}
+		for name := range src.Properties {
+			dst.Properties[name] = src.Properties[name]
+		}
+	}
+	mergeAdditionalProperties(dst, src)
+	if dst.Items == nil {
+		dst.Items = src.Items
+	}
+	dst.OneOf = append(dst.OneOf, src.OneOf...)
+	dst.AnyOf = append(dst.AnyOf, src.AnyOf...)
+	if len(dst.Enum) == 0 {
+		dst.Enum = src.Enum
+	}
+}
+
+func mergeAdditionalProperties(dst, src *SchemaInfo) {
+	if src.AdditionalProperties == nil {
+		return
+	}
+	if dst.AdditionalProperties == nil || !*src.AdditionalProperties {
+		allowed := *src.AdditionalProperties
+		dst.AdditionalProperties = &allowed
+	}
+}
+
+func mergeSchemaConstraints(dst, src *SchemaInfo) {
+	if dst.MinLength == 0 {
+		dst.MinLength = src.MinLength
+	}
+	if src.Minimum != nil && (dst.Minimum == nil || *src.Minimum > *dst.Minimum) {
+		dst.Minimum = src.Minimum
+	}
+	if src.Maximum != nil && (dst.Maximum == nil || *src.Maximum < *dst.Maximum) {
+		dst.Maximum = src.Maximum
+	}
+	if dst.MaxLength == 0 {
+		dst.MaxLength = src.MaxLength
+	}
+	if dst.MinItems == 0 {
+		dst.MinItems = src.MinItems
+	}
+	if dst.MaxItems == 0 {
+		dst.MaxItems = src.MaxItems
+	}
+	if src.MinProperties > dst.MinProperties {
+		dst.MinProperties = src.MinProperties
+	}
+	if dst.Pattern == "" {
+		dst.Pattern = src.Pattern
+	}
+}
+
+func appendUniqueStrings(dst []string, values ...string) []string {
+	seen := make(map[string]struct{}, len(dst)+len(values))
+	for _, value := range dst {
+		seen[value] = struct{}{}
+	}
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		dst = append(dst, value)
+	}
+	return dst
+}
+
+func followRef(doc map[string]any, ref string) map[string]any {
+	const prefix = "#/components/schemas/"
+	if !strings.HasPrefix(ref, prefix) {
+		return nil
+	}
+	name := strings.TrimPrefix(ref, prefix)
+	comps, ok := doc["components"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	schemas, ok := comps["schemas"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	s, _ := schemas[name].(map[string]any)
+	return s
+}
+
+func serviceName(doc map[string]any, fallback string) string {
+	if s := stringOf(doc["x-octo-service"]); s != "" {
+		return s
+	}
+	return fallback
+}
+
+func stringOf(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+func boolOf(v any) bool {
+	b, _ := v.(bool)
+	return b
+}
+
+func intOf(v any) int {
+	n, _ := v.(float64)
+	return int(n)
+}
+
+// stringSliceOf reads a JSON array of strings, ignoring non-string entries.
+// A missing or wrongly-typed value yields nil, which every consumer treats as
+// "extension not declared".
+func stringSliceOf(v any) []string {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, x := range arr {
+		if s, ok := x.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// stringMapOf reads a JSON object of string→string. Non-string values are
+// dropped rather than coerced, so a malformed table degrades to "not declared"
+// for that key instead of producing a bogus path.
+func stringMapOf(v any) map[string]string {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(obj))
+	for k, x := range obj {
+		if s, ok := x.(string); ok && s != "" {
+			out[k] = s
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// stringSliceMapOf reads a JSON object of string→[]string. A scalar string
+// value is accepted as a one-element list so a simple rename can be written
+// without array syntax.
+func stringSliceMapOf(v any) map[string][]string {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string][]string, len(obj))
+	for k, x := range obj {
+		switch t := x.(type) {
+		case string:
+			if t != "" {
+				out[k] = []string{t}
+			}
+		case []any:
+			if targets := stringSliceOf(t); len(targets) > 0 {
+				out[k] = targets
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func stringsOf(v any) []string {
+	values, _ := v.([]any)
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if text, ok := value.(string); ok {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+// truthy accepts a JSON value that may be a boolean `true` or the string
+// `"true"`. It exists so the x-octo-disabled flag can't silently no-op when
+// written as a string in a spec — the same rule the skill frontmatter uses.
+func truthy(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		return t == "true"
+	default:
+		return false
+	}
+}

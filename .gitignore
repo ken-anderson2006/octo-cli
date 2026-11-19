@@ -1,0 +1,32 @@
+# Binary (root only)
+/octo-cli
+/bin/
+# npm publishes the checked-in Node shim from npm/bin/, but local packaging
+# smoke tests may still place generated binaries there.
+!/npm/bin/
+/npm/bin/octo-cli
+/npm/bin/octo-cli.exe
+coverage.out
+
+# Go
+go.work.sum
+*.test
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Claude Code
+.omc/
+
+# Local release configuration, credentials and generated artifacts
+/scripts/release/node_modules/
+/scripts/release/*.local.*
+/scripts/release/.env*
+!/scripts/release/.env.example
+/scripts/release/*.pem
+/scripts/release/*.key
+/release-dist/

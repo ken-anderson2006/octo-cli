@@ -1,0 +1,173 @@
+# Cut a GitHub Release for a tag whose commit already passed CI, build the
+# cross-platform binaries ONCE, and fan that single build out to both the
+# GitHub Release and the npm packages.
+#
+# Job graph:
+#
+#                    publish ── build ── release-upload ── publish-npm
+#                         │                                     │
+#                         └──────────── cleanup-dist-artifact ◀──┘
+#
+# Why this shape:
+#   * publish is the CI-evidence gate. Build intentionally waits for it so an
+#     arbitrary tag cannot run build steps before the gate passes.
+#   * the binaries are built EXACTLY ONCE; release-upload and publish-npm consume
+#     the same `goreleaser-dist` artifact (npm no longer re-downloads from the
+#     Release).
+#   * npm publish waits for release-upload, so immutable npm versions do not
+#     appear before the matching GitHub Release assets/checksums are attached.
+#   * the run-scoped artifact uses GitHub's minimum retention and is deleted
+#     once both consumers have finished.
+name: Release Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.6.0)"
+        required: true
+        type: string
+      validate_run_id:
+        description: "Successful CI run ID from the tagged commit (release evidence)"
+        required: true
+        type: string
+      draft:
+        description: "Keep as draft instead of publishing"
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  # Org-gated Release creation: validates the CI-evidence run id and creates/
+  # publishes the GitHub Release.
+  publish:
+    uses: Mininglamp-OSS/.github/.github/workflows/reusable-release-publish.yml@v1
+    with:
+      tag: ${{ inputs.tag }}
+      validate_run_id: ${{ inputs.validate_run_id }}
+      draft: ${{ inputs.draft }}
+    permissions:
+      contents: write
+      actions: read
+
+  # Build the cross-platform archives once and publish them as a run-scoped
+  # artifact after the CI-evidence gate passes.
+  build:
+    needs: publish
+    if: ${{ inputs.draft == false }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Validate tag input (pre-checkout)
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::inputs.tag must be v-prefixed semver (got '$TAG')."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.24.x"
+          cache: true
+
+      - name: Build with GoReleaser
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean --skip=publish,announce
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Run-scoped artifact consumed by both release-upload and publish-npm in
+      # this same run. Contains every *.tar.gz plus checksums.txt. GitHub's
+      # minimum retention is 1 day; cleanup-dist-artifact deletes it earlier.
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: goreleaser-dist
+          path: dist
+          retention-days: 1
+          if-no-files-found: error
+
+  # Attach the built archives to the GitHub Release. Needs the Release to
+  # exist (publish) and the binaries to be built (build).
+  release-upload:
+    needs: [publish, build]
+    if: ${{ inputs.draft == false }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: goreleaser-dist
+          path: dist
+      - name: Upload artifacts to release
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$TAG" dist/*.tar.gz dist/checksums.txt --clobber --repo "$GITHUB_REPOSITORY"
+
+  # Repack the SAME build artifact into npm packages after the Release assets
+  # are attached. Reuses npm-publish.yml via workflow_call (from_artifact: true)
+  # so there is no duplicate publish logic and no second download from the
+  # Release.
+  publish-npm:
+    needs: [publish, build, release-upload]
+    if: ${{ inputs.draft == false }}
+    uses: ./.github/workflows/npm-publish.yml
+    with:
+      tag: ${{ inputs.tag }}
+      dry_run: false
+      from_artifact: true
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+
+  # Delete the run-scoped build artifact after both release-upload and
+  # publish-npm have had a chance to consume it. This keeps GitHub Release assets
+  # as the durable binary store while Actions storage is only temporary plumbing.
+  cleanup-dist-artifact:
+    needs: [build, release-upload, publish-npm]
+    if: ${{ always() && inputs.draft == false && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete dist artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          artifact_ids=$(gh api \
+            --paginate \
+            "/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name == "goreleaser-dist") | .id')
+          if [ -z "$artifact_ids" ]; then
+            echo "[release-publish] goreleaser-dist artifact already deleted or not found."
+            exit 0
+          fi
+
+          for artifact_id in $artifact_ids; do
+            echo "[release-publish] deleting goreleaser-dist artifact $artifact_id"
+            gh api --method DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"
+          done
