@@ -177,20 +177,25 @@ func (fp *compiledFixturePolicy) validBundle(p Bundle) bool {
 		if effect != "allow" && effect != "deny" {
 			return false
 		}
-		if effect == "allow" {
-			caps, ok := rule["capabilities"].([]any)
-			if !ok || len(caps) == 0 {
+		caps, ok := rule["capabilities"].([]any)
+		if !ok || len(caps) == 0 {
+			return false
+		}
+		for _, rawID := range caps {
+			id, ok := rawID.(string)
+			if !ok || StaticProvenanceRequired(id) {
 				return false
-			}
-			for _, rawID := range caps {
-				id, ok := rawID.(string)
-				if !ok || !fp.allowed[id] {
-					return false
-				}
 			}
 		}
 	}
 	return true
+}
+
+func (fp *compiledFixturePolicy) capabilityAllowed(capability string) bool {
+	if fp == nil {
+		return true
+	}
+	return !fp.denied[capability] && !StaticProvenanceRequired(capability)
 }
 
 // PageBound is a source-proven count contract from the supported release.
@@ -567,7 +572,7 @@ func (c *Coordinator) atBoundary(ctx context.Context, i *Invocation, capability 
 			err = refuse("invocation_denied")
 		} else if next.Invocation && !contributorsAllowed(p.Invocation, f.Contributors) {
 			err = refuse("context_untrusted")
-		} else if capability != "" && (!c.caps[capability] || (c.fixturePolicy != nil && !c.fixturePolicy.allowed[capability]) || next.Capability && (!f.CapabilityEligible || !stageAllows(p.Capability, f.Subject, capability))) {
+		} else if capability != "" && (!c.caps[capability] || !c.fixturePolicy.capabilityAllowed(capability) || next.Capability && (!f.CapabilityEligible || !stageAllows(p.Capability, f.Subject, capability))) {
 			err = refuse("capability_denied")
 		} else if ctx.Err() != nil {
 			err = refuse("policy_unavailable")

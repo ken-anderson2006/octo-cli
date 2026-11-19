@@ -1,0 +1,87 @@
+{
+  "format": "permission-cli-component-handoff-v9",
+  "contract_version": "v2_async_ingress_separation",
+  "task": "XIN-2794",
+  "task_id": "229ad215-8526-4a04-8f5b-36f073f81a16",
+  "charter_task_id": "17e81670-5b49-461d-9509-7c22ca127939",
+  "owner_decisions": [
+    "2123326487372140544",
+    "2123331461770547200",
+    "2123331688342654976"
+  ],
+  "trigger_comment_id": "eb7af48b-68a1-4ceb-a509-e2ce76217c93",
+  "supersedes": "cli-component-contract-v8.json",
+  "target": "chore/main-snapshot-20261029-mcp",
+  "base_sha": "f8d434b6318215948ebbf67feb11f6265dee11e5",
+  "previous_head_sha": "7a1ca54a5a4dbbfad3d329fab9e5cca28390ffc6",
+  "parent_chain": [
+    "6b116ee532ab664e6b9380c5829f03dd7619f965",
+    "424942e82934a105ed011830d5a482cb0682bd49",
+    "7a1ca54a5a4dbbfad3d329fab9e5cca28390ffc6"
+  ],
+  "status": "XIN2794_V2_NATIVE_ADMISSION_FOLLOWUP_DELIVERED_PRODUCTION_FAIL_CLOSED",
+  "catalog_digest": null,
+  "production_support_registries": {
+    "supportedPermissionReleases": [],
+    "supportedPermissionPackages": [],
+    "default_response_budgets": null
+  },
+  "xin2858_native_admission_diagnosis_and_fix": {
+    "xin2858_outcome_comment_id": "d8efbd60-157c-41ca-8193-c67978578db2",
+    "xin2858_outcome_attachment_id": "01a1f32e-3f39-7c49-a291-3f5eb831e0b5",
+    "xin2858_outcome_zip_sha256": "30cb4b2a616f9f9670669a9bba6ece383948c88a215c70c9988175c2f8ecea52",
+    "refused_admit_request_ids": [
+      "d7c39fab1af626ba0b2172069c609f58",
+      "c040f3ec27472c729af593e03d4d6883"
+    ],
+    "root_cause_1_admit_policy_unavailable_under_synthetic_allow_revision_9": "In internal/permission/coordinator.go (lines 168-194 and 531-533 in 7a1ca54a5a4dbbfad3d329fab9e5cca28390ffc6), compiledFixturePolicy.validBundle(p) ran inside atBoundary on every control/action boundary including Stage 1 admit (where capability == ''), and rejected the entire policy bundle P with policy_unavailable whenever any Stage 2 allow rule in p.Capability.Rules contained a capability ID outside the 19-entry fp.allowed set. When XIN-2858 / XIN-2868 applied synthetic allow revision 9 via 'fixture.py allow-write' (permitted writes_allowed), p.Capability.Rules included write capabilities (such as octo-cli/docs/op/docs.create) in an allow rule; validBundle(p) returned false at line 531, causing admit requests d7c39fab1af626ba0b2172069c609f58 (live DM 2123350342597775360/seq 13) and c040f3ec27472c729af593e03d4d6883 (live Group 2123350342912348160/seq 13) to refuse with policy_unavailable before Stage 1 admission could complete, even though bind_live_ingress (l1-/l2-, trigger_row_persisted=false), register_ingress, and Resolve(purpose='admit') all succeeded with HTTP 200.",
+    "fix_1_stage1_admission_and_stage2_containment": "In internal/permission/coordinator.go, compiledFixturePolicy.validBundle(p) now validates structural Stage 2 managed activation (p.Capability.State == 'E', valid allow/deny effect, non-empty capabilities, and no capability requiring static provenance such as octo-cli/docs/derived/portable-attachment-bytes), allowing Stage 1 admit, bind_context, and open_relay to succeed under both 'fixture.py allow-write' (revision 9, permitted writes_allowed) and 'fixture.py allow' (permitted writes_denied), while Stage 2 capability containment is enforced at action time (capability != '') via c.fixturePolicy.capabilityAllowed(capability) (!fp.denied[capability] && !StaticProvenanceRequired(capability)) in combination with stageAllows(p.Capability, f.Subject, capability). Under revision 9 (allow-write), live DM/group admission, allowed read/discovery/skill MCP calls, and ordinary replies (message.send) succeed with zero trigger-row SQL reads, while denied write capabilities (docs.create, docs.scene.edit, docs.scene.get) are still refused at Stage 2 with -32007 capability_denied and zero upstream dispatches. Under 'fixture.py deny', Stage 1 admit refuses with invocation_denied.",
+    "root_cause_2_and_fix_2_server_9980d29e_wire_alignment": "Aligned NativeReader.BindLiveIngress and NativeReader.EvaluateCurrentAccess in internal/permission/native_read.go with deployed octo-server 9980d29e69020c12e3dd3b5135520c1367e12356 wire schemas: BindLiveIngress sends flat top-level fields (channel_type, channel_id, message_id, message_seq, from_uid, observed_payload_sha256) and accepts Server 9980d29e 'binding' envelope (status='bound', current=true, header, proven_predicates, unknown_predicates, resolvable_purposes, authority_refs) as well as early-contract 'result'; EvaluateCurrentAccess sends flat top-level fields (purpose, channel_type, channel_id, caller_uid, optional message_id/message_seq/observed_payload_sha256) and accepts Server 9980d29e 'access' envelope (status='evaluated', eligible, profile, provenance='live_channel_acl_v1', native_message_version='live_unpersisted_v1', predicates, authority_refs) as well as early-contract 'result'."
+  },
+  "xin2858_isolated_test_catalog_repair_retained": {
+    "fixture_contract": "docs/permission/isolated-test-catalog-fixture-v1.json",
+    "catalog_mode": "isolated_test_v1",
+    "catalog_version": "octo-capabilities-v1-xin2748-v4",
+    "manifest_sha256": "ecc56c2ab0a2c520ab7e5203d2abab06671daf90c28d69f88fe1de8d154109fc",
+    "identity_index_sha256": "70cb8771d93bb38788418156029f59f35eb0031f1a8ee3b8d900eb18b673f798",
+    "semantic_sha256": "15c7ca2bf6df703979df529afbca6828f116b2463b1a818456edfad80bcad799"
+  },
+  "consumed_siblings": {
+    "server": {
+      "task": "XIN-2793",
+      "task_id": "6a92a547-cb82-4c3d-ac6c-8f5529028ba4",
+      "xin2858_baseline_head": "ab056abd74c3b61d7f86a238a16b3966f84cb723",
+      "async_ingress_head": "9980d29e69020c12e3dd3b5135520c1367e12356",
+      "delivery_comment_id": "bd07a24a-fd73-4f88-ab97-9499beae6f60",
+      "delivery_attachment_id": "01a1f31a-6635-76c9-85c4-d7f22588fa70",
+      "handoff_path": "pkg/permissionbundle/contracts/handoff-v13.json",
+      "handoff_bytes": 16129,
+      "handoff_sha256": "d8b0ed5015be571d8bd28fc7ea258e59093f5e657e623d6dc9cadfe7484c9ef4",
+      "contract_manifest_path": "pkg/permissionbundle/contracts/contract-manifest-v13.json",
+      "contract_manifest_sha256": "876cf2e4dc088c8d8b7d42989ab22a66f3e44c5eb44ef4bb8053ba0cfdf7b59a"
+    },
+    "endpoint": {
+      "task": "XIN-2795",
+      "task_id": "2f4a34e9-2be3-48ac-99f0-38a30f077acd",
+      "previous_head": "597f6a5c14233d565d4f569d93e957cf01bd1aea",
+      "async_ingress_head": "fa7896a845aaab16fdda926b4b406dfa47a3a3e4",
+      "async_ingress_tree": "c394c5a84d586a98b05cb73e2248e635354b5807",
+      "delivery_comment_id": "e9ce16e3-3ddd-45b9-9502-f619a7e20927",
+      "delivery_attachment_id": "01a1f306-ecbc-7822-ba6a-fc11e57e5dd7",
+      "handoff_path": "docs/permission-endpoint-handoff-v8.json",
+      "handoff_bytes": 6936,
+      "handoff_sha256": "dcabcc17e2d4c86f6801845d7f932870a1a176ff3fd8b3c0a42ddf45b16c8e7e"
+    }
+  },
+  "retained_contracts": {
+    "cli_component_contract_v8": "docs/permission/cli-component-contract-v8.json",
+    "contract_manifest_v8": "docs/permission/contract-manifest-v8.json",
+    "endpoint_abi_v3": "docs/permission/endpoint-abi-v3.json",
+    "endpoint_abi_v2": "docs/permission/endpoint-abi-v2.json",
+    "cli_component_contract_v7": "docs/permission/cli-component-contract-v7.json",
+    "contract_manifest_v7": "docs/permission/contract-manifest-v7.json",
+    "cli_component_contract_v6": "docs/permission/cli-component-contract-v6.json",
+    "contract_manifest_v6": "docs/permission/contract-manifest-v6.json",
+    "response_budget_ledger_v6": "docs/permission/response-budget-ledger-v6.json"
+  }
+}

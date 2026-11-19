@@ -917,16 +917,16 @@ func TestXIN2858NativeCLIStartupIsolatedTestCatalogAndFailClosedGates(t *testing
 		t.Fatalf("expected 0 upstream dispatches after stdio denied writes, got %d", deniedWriteDispatches.Load())
 	}
 
-	// Verify checked fixture policy rejects a policy bundle that tries to ALLOW a denied write (`docs.create`)
-	// or set Capability.State = "U" (unrestricted), failing closed with policy_unavailable and 0 dispatches!
+	// Verify checked fixture policy rejects a policy bundle that tries to ALLOW a capability requiring static provenance (`octo-cli/docs/derived/portable-attachment-bytes`) with policy_unavailable,
+	// while a synthetic `allow-write` policy bundle containing `message.send` + `docs.create` admits the turn and still enforces `capability_denied` (with 0 dispatches) on `docs.create`!
 	f.mu.Lock()
 	f.bundle.Revision = "1"
-	f.bundle.Capability.Rules[0]["capabilities"] = append(append([]string{}, allowedFixtureCaps...), "octo-cli/docs/op/docs.create")
+	f.bundle.Capability.Rules[0]["capabilities"] = append(append([]string{}, allowedFixtureCaps...), "octo-cli/docs/derived/portable-attachment-bytes")
 	f.save()
 	f.mu.Unlock()
 
 	var badPolicyIn bytes.Buffer
-	badPolicyIn.Write(makeStdioReqLine(105, "execute", "docs.create", map[string]any{"title": "attempted allow override"}))
+	badPolicyIn.Write(makeStdioReqLine(105, "execute", "docs.search", map[string]any{"q": "attempted static provenance allow"}))
 	badPolicyIn.WriteByte('\n')
 	badPolicyCmd := exec.CommandContext(ctx, cliBin, "--turn-relay", stdioHandle)
 	badPolicyCmd.Env = relayCmd.Env
@@ -937,7 +937,7 @@ func TestXIN2858NativeCLIStartupIsolatedTestCatalogAndFailClosedGates(t *testing
 		t.Fatal(err)
 	}
 	if !strings.Contains(badPolicyOut.String(), "-32007") || !strings.Contains(badPolicyOut.String(), "policy_unavailable") || deniedWriteDispatches.Load() != 0 {
-		t.Fatalf("expected checked fixture policy to reject allow-rule containing docs.create with policy_unavailable and 0 dispatches, got: %s", badPolicyOut.String())
+		t.Fatalf("expected checked fixture policy to reject allow-rule containing portable-attachment-bytes with policy_unavailable and 0 dispatches, got: %s", badPolicyOut.String())
 	}
 
 	// Also verify Capability.State = "U" is rejected by checked fixture policy.

@@ -69,6 +69,45 @@ func TestXIN2794AsyncIngressContractAndManifestV8(t *testing.T) {
 			t.Fatalf("contract-manifest-v8 mismatch for %s: got bytes=%d sha=%s, want bytes=%d sha=%s", relPath, len(b), sha256Sum(b), entry.Bytes, entry.SHA256)
 		}
 	}
+
+	manifestV9Raw, err := os.ReadFile("../../docs/permission/contract-manifest-v9.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifestV9 struct {
+		Format                     string `json:"format"`
+		ContractVersion            string `json:"contract_version"`
+		CatalogDigest              any    `json:"catalog_digest"`
+		IsolatedTestCatalogMode    string `json:"isolated_test_catalog_mode"`
+		IsolatedTestCatalogVersion string `json:"isolated_test_catalog_version"`
+		IsolatedTestManifestSHA256 string `json:"isolated_test_manifest_sha256"`
+		IsolatedTestSemanticSHA256 string `json:"isolated_test_semantic_sha256"`
+		Files                      map[string]struct {
+			Bytes  int    `json:"bytes"`
+			SHA256 string `json:"sha256"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(manifestV9Raw, &manifestV9); err != nil {
+		t.Fatal(err)
+	}
+	if manifestV9.Format != "permission-cli-contract-manifest-v9" ||
+		manifestV9.ContractVersion != permission.LiveIngressContractVersion ||
+		manifestV9.CatalogDigest != nil ||
+		manifestV9.IsolatedTestCatalogMode != IsolatedTestCatalogMode ||
+		manifestV9.IsolatedTestCatalogVersion != IsolatedTestCatalogVersion ||
+		manifestV9.IsolatedTestManifestSHA256 != IsolatedTestCatalogDigest ||
+		manifestV9.IsolatedTestSemanticSHA256 != IsolatedTestCatalogSemanticSHA256 {
+		t.Fatalf("unexpected contract-manifest-v9 header: %+v", manifestV9)
+	}
+	for relPath, entry := range manifestV9.Files {
+		b, rerr := os.ReadFile(filepath.Join("../..", filepath.FromSlash(relPath)))
+		if rerr != nil {
+			t.Fatalf("missing contract-manifest-v9 file %s: %v", relPath, rerr)
+		}
+		if len(b) != entry.Bytes || sha256Sum(b) != entry.SHA256 {
+			t.Fatalf("contract-manifest-v9 mismatch for %s: got bytes=%d sha=%s, want bytes=%d sha=%s", relPath, len(b), sha256Sum(b), entry.Bytes, entry.SHA256)
+		}
+	}
 }
 
 func TestXIN2794AsyncIngressSeparationLiveTurnAndNegativeMatrix(t *testing.T) {
@@ -274,14 +313,17 @@ func TestXIN2794AsyncIngressSeparationLiveTurnAndNegativeMatrix(t *testing.T) {
 				return
 			}
 			bindLiveIngressCalls.Add(1)
-			li, _ := req["live_ingress"].(map[string]any)
-			ctFloat, _ := li["channel_type"].(float64)
+			src := req
+			if li, ok := req["live_ingress"].(map[string]any); ok && len(li) > 0 {
+				src = li
+			}
+			ctFloat, _ := src["channel_type"].(float64)
 			ct := int(ctFloat)
-			chID, _ := li["channel_id"].(string)
-			msgID, _ := li["message_id"].(string)
-			msgSeq, _ := li["message_seq"].(string)
-			fromUID, _ := li["from_uid"].(string)
-			obsSHA, _ := li["observed_payload_sha256"].(string)
+			chID, _ := src["channel_id"].(string)
+			msgID, _ := src["message_id"].(string)
+			msgSeq, _ := src["message_seq"].(string)
+			fromUID, _ := src["from_uid"].(string)
+			obsSHA, _ := src["observed_payload_sha256"].(string)
 
 			canonicalCh := chID
 			sourceKind := "group"
@@ -311,7 +353,11 @@ func TestXIN2794AsyncIngressSeparationLiveTurnAndNegativeMatrix(t *testing.T) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			auths, _ := makeAuthorities()
+			stateMu.Lock()
+			eligible := liveMemberEligible[fromUID]
+			stateMu.Unlock()
+			profile := sourceKind + "_admit_v1"
+			auths, nonces := makeAuthorities()
 			now := time.Now().UTC().Format(time.RFC3339Nano)
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -322,29 +368,38 @@ func TestXIN2794AsyncIngressSeparationLiveTurnAndNegativeMatrix(t *testing.T) {
 				"read_id":         nextHex32(),
 				"observed_at":     now,
 				"authorities":     auths,
-				"result": map[string]any{
-					"status":                     "resolved",
-					"contract_version":           permission.LiveIngressContractVersion,
+				"binding": map[string]any{
+					"status":                     "bound",
+					"current":                    true,
 					"provenance":                 permission.LiveChannelACLProvenance,
 					"trigger_row_persisted":      false,
 					"content_attested_by_server": false,
 					"delivery_reference":         l1Ref,
 					"header_reference":           l2Ref,
 					"native_message_version":     permission.LiveUnpersistedMessageVersion,
-					"source":                     map[string]any{"kind": sourceKind, "id": canonicalCh},
-					"parent_group":               parentGroup,
-					"author_uid":                 fromUID,
-					"author_kind":                "human",
-					"recipient_bot_uid":          "bot",
-					"space_id":                   "space",
-					"message_id":                 msgID,
-					"payload_sha256":             obsSHA,
-					"delivery": map[string]any{
-						"stream_id":          "im_" + strconv.Itoa(ct) + "_" + canonicalCh,
-						"stream_incarnation": strings.Repeat("3", 32),
-						"sequence":           msgSeq,
+					"observed_payload_sha256":    obsSHA,
+					"header": map[string]any{
+						"header_version":         1,
+						"header_reference":       l2Ref,
+						"message_id":             msgID,
+						"source":                 map[string]any{"kind": sourceKind, "id": canonicalCh},
+						"parent_group":           parentGroup,
+						"space_id":               "space",
+						"author_uid":             fromUID,
+						"author_kind":            "human",
+						"recipient_bot_uid":      "bot",
+						"native_message_version": permission.LiveUnpersistedMessageVersion,
+						"payload_sha256":         obsSHA,
+						"delivery": map[string]any{
+							"stream_id":          "im_" + strconv.Itoa(ct) + "_" + canonicalCh,
+							"stream_incarnation": strings.Repeat("3", 32),
+							"sequence":           msgSeq,
+						},
 					},
+					"proven_predicates":   predicatesForProfile(profile, eligible),
+					"unknown_predicates":  []string{},
 					"resolvable_purposes": []string{"admit", "reply"},
+					"authority_refs":      nonces,
 				},
 			})
 		case "/v1/bot/permission-facts/v1":
@@ -360,11 +415,17 @@ func TestXIN2794AsyncIngressSeparationLiveTurnAndNegativeMatrix(t *testing.T) {
 
 			if op == "evaluate_current_access" {
 				evaluateCurrentAccessCalls.Add(1)
-				ca, _ := req["current_access"].(map[string]any)
+				ca := req
+				if nested, ok := req["current_access"].(map[string]any); ok && len(nested) > 0 {
+					ca = nested
+				}
 				ctFloat, _ := ca["channel_type"].(float64)
 				ct := int(ctFloat)
 				chID, _ := ca["channel_id"].(string)
 				callerUID, _ := ca["caller_uid"].(string)
+				if callerUID == "" {
+					callerUID, _ = ca["from_uid"].(string)
+				}
 				canonicalCh := chID
 				sourceKind := "group"
 				var parentGroup any
@@ -396,20 +457,18 @@ func TestXIN2794AsyncIngressSeparationLiveTurnAndNegativeMatrix(t *testing.T) {
 					"read_id":         nextHex32(),
 					"observed_at":     now,
 					"authorities":     auths,
-					"result": map[string]any{
-						"status":                     "resolved",
-						"contract_version":           permission.LiveIngressContractVersion,
+					"access": map[string]any{
+						"status":                     "evaluated",
+						"eligible":                   eligible,
+						"profile":                    profile,
 						"provenance":                 permission.LiveChannelACLProvenance,
 						"trigger_row_persisted":      false,
 						"content_attested_by_server": false,
-						"purpose":                    purpose,
+						"native_message_version":     permission.LiveUnpersistedMessageVersion,
 						"source":                     map[string]any{"kind": sourceKind, "id": canonicalCh},
 						"parent_group":               parentGroup,
-						"space_id":                   "space",
-						"author_uid":                 callerUID,
+						"caller_uid":                 callerUID,
 						"author_kind":                "human",
-						"recipient_bot_uid":          "bot",
-						"profile":                    profile,
 						"authority_refs":             nonces,
 						"predicates":                 predicatesForProfile(profile, eligible),
 					},
@@ -1368,5 +1427,196 @@ func TestXIN2794AsyncIngressSeparationLiveTurnAndNegativeMatrix(t *testing.T) {
 	})
 	if admitBobResp["status"] != "refused" || admitBobResp["payload"].(map[string]any)["category"] != "invocation_denied" {
 		t.Fatalf("expected non-member live thread ingress to be refused at admit with invocation_denied, got %v", admitBobResp)
+	}
+
+	// =========================================================================
+	// Scenario 6: Exact XIN-2858 revision 9 (`fixture.py allow-write` / `permitted writes_allowed`)
+	// regression test for requests d7c39fab1af626ba0b2172069c609f58 (live DM) and
+	// c040f3ec27472c729af593e03d4d6883 (live Group), plus revision 10 (`fixture.py deny`).
+	// - Under revision 9 (`allow-write`), `capability.rules` includes write capabilities
+	//   (`octo-cli/docs/op/docs.create`, `octo-cli/docs/op/docs.scene.edit`) in an `allow` rule.
+	// - Stage 1 `admit` MUST succeed (no longer refusing with `policy_unavailable`!),
+	//   allowed read (`docs.search`) and ordinary reply (`message.send`) succeed with
+	//   zero trigger-row SQL reads, while Stage 2 isolated-test fixture containment
+	//   still refuses `docs.create` / `docs.scene.edit` with `-32007 capability_denied`
+	//   and 0 upstream dispatches.
+	// - Under revision 10 (`fixture.py deny`), Stage 1 `admit` refuses with `invocation_denied`
+	//   (not `policy_unavailable`).
+	// =========================================================================
+	f.mu.Lock()
+	f.bundle.Revision = "9"
+	f.bundle.Invocation.State = "E"
+	f.bundle.Invocation.Rules = []permission.Rule{
+		{
+			"rule_id": "allow_human_all_convs",
+			"effect":  "allow",
+			"caller":  map[string]any{"kind": "all_humans"},
+			"source":  map[string]any{"kind": "all_in_space", "conversation_types": []any{"dm", "group", "thread"}},
+		},
+	}
+	f.bundle.Capability.State = "E"
+	allowWriteCaps := append([]string{}, allowedFixtureCaps...)
+	allowWriteCaps = append(allowWriteCaps,
+		"octo-cli/docs/op/docs.create",
+		"octo-cli/docs/op/docs.scene.edit",
+		"octo-cli/docs/op/docs.scene.get",
+		"octo-cli/loop/op/task.create",
+	)
+	f.bundle.Capability.Rules = []permission.Rule{
+		{
+			"rule_id":      "allow_write_synthetic_rev9",
+			"effect":       "allow",
+			"caller":       map[string]any{"kind": "all_humans"},
+			"source":       map[string]any{"kind": "all_in_space", "conversation_types": []any{"dm", "group", "thread"}},
+			"capabilities": allowWriteCaps,
+		},
+	}
+	f.save()
+	f.mu.Unlock()
+
+	rev9DMPayloadSHA := "e2073b955a30164e97c311ca1ea9777b0ff4e023ed39a8e1961f439028c16d64"
+	rev9DMBinding, err := nativeReader.BindLiveIngress(ctx, f.bundle.Key, permission.LiveIngressRequest{
+		ChannelType:           1,
+		ChannelID:             "alice",
+		MessageID:             "2123350342597775360",
+		MessageSeq:            "13",
+		FromUID:               "alice",
+		ObservedPayloadSHA256: rev9DMPayloadSHA,
+	})
+	if err != nil {
+		t.Fatalf("BindLiveIngress failed on revision 9 live DM: %v", err)
+	}
+	ingRev9DM := requestOK("register_ingress", map[string]any{
+		"key":                f.bundle.Key,
+		"delivery_reference": rev9DMBinding.DeliveryReference,
+		"stream":             rev9DMBinding.Header.Delivery,
+		"payload_sha256":     rev9DMPayloadSHA,
+		"header":             rev9DMBinding.Header,
+		"provenance":         permission.LiveChannelACLProvenance,
+	})
+	ctxRev9DM := permission.NewID()
+	admRev9DM := requestOK("admit", map[string]any{
+		"ingress_id":          ingRev9DM["ingress_id"],
+		"proposed_context_id": ctxRev9DM,
+	})
+	manRev9DM := map[string]any{
+		"context_id":         ctxRev9DM,
+		"context_generation": admRev9DM["generation"],
+		"originals":          []permission.NativeHeader{rev9DMBinding.Header},
+	}
+	mRev9DMBytes, _ := permission.PrivateJSON(manRev9DM)
+	manRev9DM["bytes"] = len(mRev9DMBytes)
+	manRev9DM["sha256"] = sha256Sum(mRev9DMBytes)
+	requestOK("bind_context", map[string]any{
+		"capsule_id": admRev9DM["capsule_id"],
+		"manifest":   manRev9DM,
+	})
+	relayRev9DM := requestOK("open_relay", map[string]any{
+		"capsule_id":        admRev9DM["capsule_id"],
+		"recipient_id":      "endpoint-1",
+		"transport":         "http",
+		"relay_nonce":       permission.NewID(),
+		"include_tls_trust": true,
+	})
+	rev9DMToken := relayRev9DM["handle"].(string)
+	if initResp, code := postHTTP(rev9DMToken, initializedRequest()); code != http.StatusOK || initResp.Error != nil {
+		t.Fatalf("Revision 9 DM HTTP initialize failed: code=%d err=%v", code, initResp.Error)
+	}
+	rev9DMDecl := permission.DeclarationV2{
+		Sender:      "alice",
+		Channel:     expectedDMPair,
+		ChannelType: 1,
+		SpaceID:     "space",
+		MessageID:   "2123350342597775360",
+	}
+	rSearchRev9, _ := postHTTP(rev9DMToken, makeToolReq(30, rev9DMDecl, "execute", "docs.search", map[string]any{"q": "rev9 allow-write"}))
+	if rSearchRev9.Error != nil || !bytes.Contains(rSearchRev9.Result, []byte("Async Ingress Separated Doc")) {
+		t.Fatalf("revision 9 live DM docs.search failed: err=%v result=%s", rSearchRev9.Error, string(rSearchRev9.Result))
+	}
+	rCreateRev9, _ := postHTTP(rev9DMToken, makeToolReq(31, rev9DMDecl, "execute", "docs.create", map[string]any{"title": "denied even under allow-write"}))
+	if rCreateRev9.Error == nil || rCreateRev9.Error.Code != -32007 || !strings.Contains(fmt.Sprint(rCreateRev9.Error.Data), "capability_denied") || deniedWriteDispatches.Load() != 0 {
+		t.Fatalf("expected revision 9 allow-write docs.create to be refused by fixture capabilityAllowed with -32007 capability_denied and 0 dispatches, got %+v", rCreateRev9)
+	}
+	rSendRev9, _ := postHTTP(rev9DMToken, makeToolReq(32, rev9DMDecl, "call_op", "message.send", map[string]any{
+		"channel_id":   expectedDMPair,
+		"channel_type": 1,
+		"payload":      map[string]any{"text": "rev9 dm reply"},
+	}))
+	if rSendRev9.Error != nil || !bytes.Contains(rSendRev9.Result, []byte("msg_reply_async_1")) {
+		t.Fatalf("revision 9 live DM message.send failed: err=%v result=%s", rSendRev9.Error, string(rSendRev9.Result))
+	}
+	requestOK("close", map[string]any{"capsule_id": admRev9DM["capsule_id"], "reason": "completed"})
+
+	// Also verify revision 9 live Group admission (c040f3ec27472c729af593e03d4d6883 equivalent).
+	rev9GrpPayloadSHA := "a10c9c6b42094ba88f64da027e29a8c3eb61c57189b5086bfac5d882e46f7664"
+	rev9GrpBinding, err := nativeReader.BindLiveIngress(ctx, f.bundle.Key, permission.LiveIngressRequest{
+		ChannelType:           2,
+		ChannelID:             "group",
+		MessageID:             "2123350342912348160",
+		MessageSeq:            "13",
+		FromUID:               "alice",
+		ObservedPayloadSHA256: rev9GrpPayloadSHA,
+	})
+	if err != nil {
+		t.Fatalf("BindLiveIngress failed on revision 9 live Group: %v", err)
+	}
+	ingRev9Grp := requestOK("register_ingress", map[string]any{
+		"key":                f.bundle.Key,
+		"delivery_reference": rev9GrpBinding.DeliveryReference,
+		"stream":             rev9GrpBinding.Header.Delivery,
+		"payload_sha256":     rev9GrpPayloadSHA,
+		"header":             rev9GrpBinding.Header,
+		"provenance":         permission.LiveChannelACLProvenance,
+	})
+	admRev9Grp := requestOK("admit", map[string]any{
+		"ingress_id":          ingRev9Grp["ingress_id"],
+		"proposed_context_id": permission.NewID(),
+	})
+	requestOK("close", map[string]any{"capsule_id": admRev9Grp["capsule_id"], "reason": "completed"})
+
+	// Now verify revision 10 (`fixture.py deny` / `denied writes_denied`) refuses at Stage 1 admit with `invocation_denied` (not `policy_unavailable`).
+	f.mu.Lock()
+	f.bundle.Revision = "10"
+	f.bundle.Invocation.State = "E"
+	f.bundle.Invocation.Rules = []permission.Rule{
+		{
+			"rule_id": "deny_human_all_convs",
+			"effect":  "deny",
+			"caller":  map[string]any{"kind": "all_humans"},
+			"source":  map[string]any{"kind": "all_in_space", "conversation_types": []any{"dm", "group", "thread"}},
+		},
+	}
+	f.save()
+	f.mu.Unlock()
+
+	rev10DMPayloadSHA := strings.Repeat("9", 64)
+	rev10DMBinding, err := nativeReader.BindLiveIngress(ctx, f.bundle.Key, permission.LiveIngressRequest{
+		ChannelType:           1,
+		ChannelID:             "alice",
+		MessageID:             "2123350342999999999",
+		MessageSeq:            "14",
+		FromUID:               "alice",
+		ObservedPayloadSHA256: rev10DMPayloadSHA,
+	})
+	if err != nil {
+		t.Fatalf("BindLiveIngress failed on revision 10 live DM: %v", err)
+	}
+	ingRev10DM := requestOK("register_ingress", map[string]any{
+		"key":                f.bundle.Key,
+		"delivery_reference": rev10DMBinding.DeliveryReference,
+		"stream":             rev10DMBinding.Header.Delivery,
+		"payload_sha256":     rev10DMPayloadSHA,
+		"header":             rev10DMBinding.Header,
+		"provenance":         permission.LiveChannelACLProvenance,
+	})
+	admitRev10Resp := sendControlFrame("admit", map[string]any{
+		"ingress_id":          ingRev10DM["ingress_id"],
+		"proposed_context_id": permission.NewID(),
+	})
+	if admitRev10Resp["status"] != "refused" || admitRev10Resp["payload"].(map[string]any)["category"] != "invocation_denied" {
+		t.Fatalf("expected revision 10 deny policy to refuse admit with invocation_denied, got %v", admitRev10Resp)
+	}
+	if triggerRowSQLReads.Load() != 0 {
+		t.Fatalf("expected 0 trigger-row SQL reads across all live scenarios, got %d", triggerRowSQLReads.Load())
 	}
 }

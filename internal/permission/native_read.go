@@ -673,6 +673,56 @@ func resolveResultFieldsValid(a map[string]any, isLive bool) bool {
 	return true
 }
 
+func validDMPairOrNativeID(channelType int, id string) bool {
+	if channelType == 1 && strings.Contains(id, "@") {
+		return validText(id, 100, 400)
+	}
+	if channelType == 5 {
+		return validText(id, 256, 256)
+	}
+	return ValidNativeID(id)
+}
+
+func bindLiveIngressEnvelopeValid(m map[string]any, expectedReqID string) bool {
+	if m["schema_version"] != json.Number("1") || m["profile_version"] != json.Number("1") || m["request_id"] != expectedReqID || !validHex(text(m["read_id"]), 32) || !utcTimestamp(m["observed_at"]) {
+		return false
+	}
+	return fields(m, "schema_version", "profile_version", "key", "request_id", "read_id", "observed_at", "authorities", "binding") ||
+		fields(m, "schema_version", "profile_version", "key", "request_id", "read_id", "observed_at", "authorities", "result")
+}
+
+func bindLiveIngressResultFieldsValid(res map[string]any) bool {
+	if text(res["provenance"]) != LiveChannelACLProvenance {
+		return false
+	}
+	if fields(res, "status", "current", "provenance", "trigger_row_persisted", "content_attested_by_server", "delivery_reference", "header_reference", "native_message_version", "observed_payload_sha256", "header", "proven_predicates", "unknown_predicates", "resolvable_purposes", "authority_refs") {
+		current, ok := res["current"].(bool)
+		return ok && current && res["status"] == "bound"
+	}
+	return fields(res, "status", "contract_version", "provenance", "trigger_row_persisted", "content_attested_by_server", "delivery_reference", "header_reference", "native_message_version", "source", "parent_group", "author_uid", "author_kind", "recipient_bot_uid", "space_id", "message_id", "payload_sha256", "delivery", "resolvable_purposes") &&
+		res["status"] == "resolved" && text(res["contract_version"]) == LiveIngressContractVersion
+}
+
+func evaluateCurrentAccessEnvelopeValid(m map[string]any, expectedReqID string) bool {
+	if m["schema_version"] != json.Number("1") || m["profile_version"] != json.Number("1") || m["request_id"] != expectedReqID || !validHex(text(m["read_id"]), 32) || !utcTimestamp(m["observed_at"]) {
+		return false
+	}
+	return fields(m, "schema_version", "profile_version", "key", "request_id", "read_id", "observed_at", "authorities", "access") ||
+		fields(m, "schema_version", "profile_version", "key", "request_id", "read_id", "observed_at", "authorities", "result")
+}
+
+func evaluateCurrentAccessResultFieldsValid(res map[string]any, expectedPurpose string, key Key, expectedCallerUID string) bool {
+	if text(res["provenance"]) != LiveChannelACLProvenance {
+		return false
+	}
+	if fields(res, "status", "eligible", "profile", "provenance", "trigger_row_persisted", "content_attested_by_server", "native_message_version", "source", "parent_group", "caller_uid", "author_kind", "authority_refs", "predicates") {
+		_, ok := res["eligible"].(bool)
+		return ok && res["status"] == "evaluated" && text(res["caller_uid"]) == expectedCallerUID && text(res["native_message_version"]) == LiveUnpersistedMessageVersion
+	}
+	return fields(res, "status", "contract_version", "provenance", "trigger_row_persisted", "content_attested_by_server", "purpose", "source", "parent_group", "space_id", "author_uid", "author_kind", "recipient_bot_uid", "profile", "authority_refs", "predicates") &&
+		res["status"] == "resolved" && text(res["contract_version"]) == LiveIngressContractVersion && text(res["purpose"]) == expectedPurpose && text(res["space_id"]) == key.SpaceID && text(res["recipient_bot_uid"]) == key.BotUID && text(res["author_uid"]) == expectedCallerUID
+}
+
 // BindLiveIngress executes Wire Contract A (POST /v1/bot/permission-facts/v1/bind-delivery
 // with operation "bind_live_ingress") to canonicalize a live WS ingress event,
 // evaluate current SQL Bot/caller/channel/space ACL under fenced authority cuts
@@ -681,7 +731,7 @@ func (r *NativeReader) BindLiveIngress(ctx context.Context, key Key, req LiveIng
 	if key.Origin != r.self.origin || key.BotUID != r.self.botUID || !key.Valid() {
 		return LiveIngressBinding{}, ErrUnavailable
 	}
-	if (req.ChannelType != 1 && req.ChannelType != 2 && req.ChannelType != 5) || !ValidNativeID(req.ChannelID) || !ValidNativeID(req.FromUID) {
+	if (req.ChannelType != 1 && req.ChannelType != 2 && req.ChannelType != 5) || !validDMPairOrNativeID(req.ChannelType, req.ChannelID) || !ValidNativeID(req.FromUID) {
 		return LiveIngressBinding{}, ErrUnavailable
 	}
 	if _, err := U64(req.MessageID); err != nil {
@@ -695,18 +745,15 @@ func (r *NativeReader) BindLiveIngress(ctx context.Context, key Key, req LiveIng
 	}
 	id := randomID()
 	body, err := json.Marshal(map[string]any{
-		"schema_version":  1,
-		"profile_version": 1,
-		"request_id":      id,
-		"operation":       "bind_live_ingress",
-		"live_ingress": map[string]any{
-			"channel_type":            req.ChannelType,
-			"channel_id":              req.ChannelID,
-			"message_id":              req.MessageID,
-			"message_seq":             req.MessageSeq,
-			"from_uid":                req.FromUID,
-			"observed_payload_sha256": req.ObservedPayloadSHA256,
-		},
+		"schema_version":          1,
+		"request_id":              id,
+		"operation":               "bind_live_ingress",
+		"channel_type":            req.ChannelType,
+		"channel_id":              req.ChannelID,
+		"message_id":              req.MessageID,
+		"message_seq":             req.MessageSeq,
+		"from_uid":                req.FromUID,
+		"observed_payload_sha256": req.ObservedPayloadSHA256,
 	})
 	if err != nil || len(body) > 32768 {
 		return LiveIngressBinding{}, ErrUnavailable
@@ -732,7 +779,7 @@ func (r *NativeReader) BindLiveIngress(ctx context.Context, key Key, req LiveIng
 		return LiveIngressBinding{}, ErrUnavailable
 	}
 	m := object(v)
-	if !fields(m, "schema_version", "profile_version", "key", "request_id", "read_id", "observed_at", "authorities", "result") || m["schema_version"] != json.Number("1") || m["profile_version"] != json.Number("1") || m["request_id"] != id || !validHex(text(m["read_id"]), 32) || !utcTimestamp(m["observed_at"]) {
+	if !bindLiveIngressEnvelopeValid(m, id) {
 		return LiveIngressBinding{}, ErrUnavailable
 	}
 	var actual Key
@@ -760,7 +807,10 @@ func (r *NativeReader) BindLiveIngress(ctx context.Context, key Key, req LiveIng
 		nonces[nonce] = true
 	}
 	res := object(m["result"])
-	if !fields(res, "status", "contract_version", "provenance", "trigger_row_persisted", "content_attested_by_server", "delivery_reference", "header_reference", "native_message_version", "source", "parent_group", "author_uid", "author_kind", "recipient_bot_uid", "space_id", "message_id", "payload_sha256", "delivery", "resolvable_purposes") || res["status"] != "resolved" || text(res["contract_version"]) != LiveIngressContractVersion || text(res["provenance"]) != LiveChannelACLProvenance {
+	if len(res) == 0 {
+		res = object(m["binding"])
+	}
+	if !bindLiveIngressResultFieldsValid(res) {
 		return LiveIngressBinding{}, ErrUnavailable
 	}
 	persisted, ok1 := res["trigger_row_persisted"].(bool)
@@ -778,41 +828,50 @@ func (r *NativeReader) BindLiveIngress(ctx context.Context, key Key, req LiveIng
 		return LiveIngressBinding{}, ErrUnavailable
 	}
 	expectedChannelID := req.ChannelID
-	if req.ChannelType == 1 {
+	if req.ChannelType == 1 && !strings.Contains(req.ChannelID, "@") {
 		expectedChannelID, err = CanonicalDMPairID(key.BotUID, req.FromUID)
 		if err != nil {
 			return LiveIngressBinding{}, ErrUnavailable
 		}
+	} else if req.ChannelType == 1 {
+		canonicalPair, cerr := CanonicalDMPairID(key.BotUID, req.FromUID)
+		if cerr != nil || req.ChannelID != canonicalPair {
+			return LiveIngressBinding{}, ErrUnavailable
+		}
+		expectedChannelID = canonicalPair
 	}
 	if parsedDelivery.ChannelType != req.ChannelType || parsedDelivery.CanonicalChannelID != expectedChannelID || parsedDelivery.MessageID != req.MessageID || parsedDelivery.MessageSeq != req.MessageSeq || parsedDelivery.FromUID != req.FromUID || parsedDelivery.PayloadSHA256 != req.ObservedPayloadSHA256 {
 		return LiveIngressBinding{}, ErrUnavailable
 	}
-	headerMap := map[string]any{
-		"header_version":         json.Number("1"),
-		"header_reference":       res["header_reference"],
-		"message_id":             res["message_id"],
-		"source":                 res["source"],
-		"parent_group":           res["parent_group"],
-		"space_id":               res["space_id"],
-		"author_uid":             res["author_uid"],
-		"author_kind":            res["author_kind"],
-		"recipient_bot_uid":      res["recipient_bot_uid"],
-		"native_message_version": res["native_message_version"],
-		"payload_sha256":         res["payload_sha256"],
-		"delivery":               res["delivery"],
+	rawHeaderObj := res["header"]
+	if rawHeaderObj == nil {
+		rawHeaderObj = map[string]any{
+			"header_version":         json.Number("1"),
+			"header_reference":       res["header_reference"],
+			"message_id":             res["message_id"],
+			"source":                 res["source"],
+			"parent_group":           res["parent_group"],
+			"space_id":               res["space_id"],
+			"author_uid":             res["author_uid"],
+			"author_kind":            res["author_kind"],
+			"recipient_bot_uid":      res["recipient_bot_uid"],
+			"native_message_version": res["native_message_version"],
+			"payload_sha256":         res["payload_sha256"],
+			"delivery":               res["delivery"],
+		}
 	}
-	h, _, err := parseNativeHeader(headerMap)
+	h, _, err := parseNativeHeader(rawHeaderObj)
 	if err != nil || h.BotUID != key.BotUID || h.SpaceID != key.SpaceID || h.Source.Kind != parsedDelivery.SourceKind || h.Source.ID != expectedChannelID || h.AuthorUID != req.FromUID || h.MessageID != req.MessageID || h.Delivery.Sequence != req.MessageSeq || h.PayloadSHA256 != req.ObservedPayloadSHA256 || h.MessageVersion != LiveUnpersistedMessageVersion {
 		return LiveIngressBinding{}, ErrUnavailable
 	}
-	purposesRaw, ok := items(res["resolvable_purposes"], 1, 2)
+	purposesRaw, ok := items(res["resolvable_purposes"], 1, 3)
 	if !ok {
 		return LiveIngressBinding{}, ErrUnavailable
 	}
 	purposes := make([]string, 0, len(purposesRaw))
 	for _, pv := range purposesRaw {
 		ps := text(pv)
-		if ps != "admit" && ps != "reply" {
+		if ps != "admit" && ps != "reply" && !(ps == "contributor" && persisted && attested) {
 			return LiveIngressBinding{}, ErrUnavailable
 		}
 		purposes = append(purposes, ps)
@@ -855,13 +914,19 @@ func (r *NativeReader) EvaluateCurrentAccess(ctx context.Context, key Key, req C
 	if key.Origin != r.self.origin || key.BotUID != r.self.botUID || !key.Valid() || (req.Purpose != "admit" && req.Purpose != "reply") {
 		return CurrentAccessFact{}, ErrUnavailable
 	}
-	if (req.ChannelType != 1 && req.ChannelType != 2 && req.ChannelType != 5) || !ValidNativeID(req.ChannelID) || !ValidNativeID(req.CallerUID) {
+	if (req.ChannelType != 1 && req.ChannelType != 2 && req.ChannelType != 5) || !validDMPairOrNativeID(req.ChannelType, req.ChannelID) || !ValidNativeID(req.CallerUID) {
 		return CurrentAccessFact{}, ErrUnavailable
 	}
-	accessPayload := map[string]any{
-		"channel_type": req.ChannelType,
-		"channel_id":   req.ChannelID,
-		"caller_uid":   req.CallerUID,
+	id := randomID()
+	reqMap := map[string]any{
+		"schema_version":  1,
+		"profile_version": 1,
+		"request_id":      id,
+		"operation":       "evaluate_current_access",
+		"purpose":         req.Purpose,
+		"channel_type":    req.ChannelType,
+		"channel_id":      req.ChannelID,
+		"caller_uid":      req.CallerUID,
 	}
 	if req.MessageID != "" || req.MessageSeq != "" || req.ObservedPayloadSHA256 != "" {
 		if _, err := U64(req.MessageID); err != nil {
@@ -873,19 +938,11 @@ func (r *NativeReader) EvaluateCurrentAccess(ctx context.Context, key Key, req C
 		if !validHex(req.ObservedPayloadSHA256, 64) {
 			return CurrentAccessFact{}, ErrUnavailable
 		}
-		accessPayload["message_id"] = req.MessageID
-		accessPayload["message_seq"] = req.MessageSeq
-		accessPayload["observed_payload_sha256"] = req.ObservedPayloadSHA256
+		reqMap["message_id"] = req.MessageID
+		reqMap["message_seq"] = req.MessageSeq
+		reqMap["observed_payload_sha256"] = req.ObservedPayloadSHA256
 	}
-	id := randomID()
-	body, err := json.Marshal(map[string]any{
-		"schema_version":  1,
-		"profile_version": 1,
-		"request_id":      id,
-		"operation":       "evaluate_current_access",
-		"purpose":         req.Purpose,
-		"current_access":  accessPayload,
-	})
+	body, err := json.Marshal(reqMap)
 	if err != nil || len(body) > 32768 {
 		return CurrentAccessFact{}, ErrUnavailable
 	}
@@ -910,7 +967,7 @@ func (r *NativeReader) EvaluateCurrentAccess(ctx context.Context, key Key, req C
 		return CurrentAccessFact{}, ErrUnavailable
 	}
 	m := object(v)
-	if !fields(m, "schema_version", "profile_version", "key", "request_id", "read_id", "observed_at", "authorities", "result") || m["schema_version"] != json.Number("1") || m["profile_version"] != json.Number("1") || m["request_id"] != id || !validHex(text(m["read_id"]), 32) || !utcTimestamp(m["observed_at"]) {
+	if !evaluateCurrentAccessEnvelopeValid(m, id) {
 		return CurrentAccessFact{}, ErrUnavailable
 	}
 	var actual Key
@@ -937,8 +994,11 @@ func (r *NativeReader) EvaluateCurrentAccess(ctx context.Context, key Key, req C
 		}
 		nonces[nonce] = true
 	}
-	res := object(m["result"])
-	if !fields(res, "status", "contract_version", "provenance", "trigger_row_persisted", "content_attested_by_server", "purpose", "source", "parent_group", "space_id", "author_uid", "author_kind", "recipient_bot_uid", "profile", "authority_refs", "predicates") || res["status"] != "resolved" || text(res["contract_version"]) != LiveIngressContractVersion || text(res["provenance"]) != LiveChannelACLProvenance || text(res["purpose"]) != req.Purpose || text(res["space_id"]) != key.SpaceID || text(res["recipient_bot_uid"]) != key.BotUID || text(res["author_uid"]) != req.CallerUID {
+	res := object(m["access"])
+	if len(res) == 0 {
+		res = object(m["result"])
+	}
+	if !evaluateCurrentAccessResultFieldsValid(res, req.Purpose, key, req.CallerUID) {
 		return CurrentAccessFact{}, ErrUnavailable
 	}
 	persisted, ok1 := res["trigger_row_persisted"].(bool)
@@ -957,11 +1017,17 @@ func (r *NativeReader) EvaluateCurrentAccess(ctx context.Context, key Key, req C
 		return CurrentAccessFact{}, ErrUnavailable
 	}
 	expectedSourceID := req.ChannelID
-	if req.ChannelType == 1 {
+	if req.ChannelType == 1 && !strings.Contains(req.ChannelID, "@") {
 		expectedSourceID, err = CanonicalDMPairID(key.BotUID, req.CallerUID)
 		if err != nil {
 			return CurrentAccessFact{}, ErrUnavailable
 		}
+	} else if req.ChannelType == 1 {
+		canonicalPair, cerr := CanonicalDMPairID(key.BotUID, req.CallerUID)
+		if cerr != nil || req.ChannelID != canonicalPair {
+			return CurrentAccessFact{}, ErrUnavailable
+		}
+		expectedSourceID = canonicalPair
 	}
 	if sourceID != expectedSourceID {
 		return CurrentAccessFact{}, ErrUnavailable
