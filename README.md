@@ -39,6 +39,42 @@ payload in `data` and any pagination metadata in `_pagination`.
 Use `server file upload --file <path>` for multipart uploads.
 `server file download --path <object-key>` returns the storage URL in `data.url`.
 
+### Personal conversation sidebar
+
+OCTO-457 operations use `server sidebar` so existing group, thread and message
+commands keep their current meanings. They require the sidebar CLI adapter in
+Octo Server and a unified Token with `im.sidebar:read` for reads or
+`im.sidebar:write` for mutations. The adapter operates on the Token owner in its
+bound Space, including when the Token has a verified Bot binding. `--space`
+does not change that scope.
+
+```sh
+octo-cli server sidebar list
+octo-cli server sidebar list --target-channel-id "$group_id" --channel-type 2
+octo-cli server sidebar follow "$group_id" --channel-type 2 --is-followed=false
+octo-cli server sidebar mute "$group_id" --channel-type 2 --mute=true
+octo-cli server sidebar move "$group_id" --channel-type 2 --category-id "$category_id"
+octo-cli server sidebar move "$group_id" --channel-type 2 --data '{"category_id":null}'
+octo-cli server sidebar mark-read "$group_id" --channel-type 2 --scope group_and_threads
+octo-cli server sidebar category delete "$category_id"
+```
+
+The list returns the complete authorized active conversation trees without
+pagination. Target reads pair `--target-channel-id` with `--channel-type` and
+return one DM or the complete parent tree, without global categories/summary.
+Channel types are `1` for a DM, `2` for a group and `5` for a complete child ID
+(`group____child`). Follow/mute accept groups and children; move also accepts
+DMs. `false` is an explicit value, and moving to ungrouped requires JSON `null`.
+
+Group follow/mute transitions apply the backend's active-child cascade; repeated
+parent requests preserve later child exceptions. Group mark-read includes all
+accessible active and archived children. It does not replace single-chat/child
+read or message receipt commands. Deleting a sidebar category preserves follows.
+Mutations are sent once; an ambiguous transport failure is reported as
+`RESULT_UNKNOWN` rather than automatically repeating an operation. Use `list`
+to reconcile preferences before deciding whether to retry. Mark-read may have
+cleared only some channels, so a retry can also clear newer messages.
+
 `api <METHOD> <PATH>` accepts JSON query parameters through `--params` and a
 JSON body through `--data`. Use `--data @file.json` or `--data @-` to read a
 body from a file or stdin. Paths are relative to the configured gateway.

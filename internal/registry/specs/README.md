@@ -12,6 +12,18 @@ redirect handling. Mutations and credential issuance disable automatic
 retries when a request outcome is uncertain. The spec marks storage
 credentials and signed URLs for diagnostic redaction.
 
+The six `sidebar.*` operations are an additive OCTO-457 contract from the
+[sidebar adapter in Octo Server](https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/bb26caf0f15c23487c3cc112013c7f2e44dd8624/docs/openapi/v2.yaml).
+They map to `server sidebar list`, `follow`, `mute`, `move`, `mark-read`, and
+`category delete`. Their schemas mirror the existing native sidebar payloads;
+their v2 authentication/actions and error envelope belong to the CLI adapter.
+The CLI mirror expands the acyclic sidebar read-response references in its
+envelope component so offline `schema sidebar.list` includes complete parent,
+child and preview fields within the framework's existing reference budget.
+The old Server operations above are retained unchanged. Deploy the adapter and
+provision `im.sidebar:read` / `im.sidebar:write` in the authorization catalog
+and target Token grants before calling them. CLI registration alone does not
+make a missing backend route or permission available.
 
 `loop.json` is derived from Fleet's `openapi/public-v2.json` on the
 `v2.5.0` tag at commit `7e63641e0a19c700557f64c6201021442b709502`.
