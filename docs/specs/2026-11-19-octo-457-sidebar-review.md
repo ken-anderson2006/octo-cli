@@ -84,3 +84,31 @@ independent approval remain outside these author-run checks.
 
 Sanitized evidence is retained locally under octo457-cli-*.log/jsonl,
 octo457-cli-live, and the owned backend runner's cli-* / reviewer-* labels.
+
+## MR review follow-up — 2026-11-20
+
+At the start of this pass, CLI !10 and backend !484 pipelines were successful;
+CLI !10 had no review comments. Backend review identified a missing move 409
+response declaration, an old-response assertion in an authority test, and a CI
+lane that could skip the SQL authority regressions. Both contracts now declare
+the existing Conflict response. The new schema regression failed before that
+addition. Actual generated and raw move commands preserve CONFLICT, send once,
+and produce no success output. Backend response/query assertions and a required
+isolated MySQL anti-skip lane were corrected in companion !484.
+
+The GET target pair remains enforced by the backend. OAS independent Parameter
+Objects do not support an Operation-level oneOf across query parameters. Both
+parameter descriptions and the backend guide explain omitting both for full
+reads, sending both for target reads, and a lone parameter returning 400. The
+existing CLI flags and backend wire model are preserved; no local conditional
+validation is claimed. Backend tests cover both lone-parameter directions and
+an empty target, alongside valid full/target cases.
+
+Local verification: full CLI Go1.25 race/shuffle 1063 passing records /428
+top-level tests, no failures or skips; vet and build pass. Backend full affected
+race/shuffle: sidebar 340/118 and SDK router 26/12, no failures/skips; the required
+SQL lane executes 31/4 with no skips. Workflow guards, server build/vet and
+OpenAPI checks pass. The new CI configuration passes GitLab's lint API. The
+earlier 12 full-process cases were not rerun for these contract/test/CI changes;
+deployed Auth/catalog/gateway acceptance is still separate. Live MR descriptions
+record the new remote pipeline results when available.

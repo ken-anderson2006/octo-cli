@@ -2,10 +2,32 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/Mininglamp-OSS/octo-cli/internal/registry"
 )
+
+func TestSidebarMoveDeclaresConflict(t *testing.T) {
+	raw, err := os.ReadFile("../internal/registry/specs/server.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec struct {
+		Paths map[string]map[string]struct {
+			Responses map[string]struct {
+				Ref string `json:"$ref"`
+			} `json:"responses"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(raw, &spec); err != nil {
+		t.Fatal(err)
+	}
+	responses := spec.Paths["/api/v2/cli/sidebar/conversations/{channel_id}/category"]["put"].Responses
+	if responses["409"].Ref != "#/components/responses/Conflict" {
+		t.Fatal("moving an unfollowed conversation must declare the backend Conflict response")
+	}
+}
 
 func TestSidebarPublicSchemaIncludesConversationAndChildFields(t *testing.T) {
 	stdout, _, err := runServerV2Command(t, "schema", "sidebar.list")

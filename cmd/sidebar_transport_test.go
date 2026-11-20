@@ -10,6 +10,35 @@ import (
 	"github.com/Mininglamp-OSS/octo-cli/internal/output"
 )
 
+func TestSidebarMoveConflictIsDefinitiveAndNotReplayed(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method != http.MethodPut || r.URL.RequestURI() != "/api/v2/cli/sidebar/conversations/g/category?channel_type=2" {
+			t.Errorf("request = %s %s", r.Method, r.URL.RequestURI())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":{"code":"CONFLICT","message":"Conversation is not followed."}}`))
+	}))
+	defer server.Close()
+	t.Setenv(config.EnvAPIBaseURL, server.URL)
+	t.Setenv(config.EnvToken, phaseOneToken)
+	for _, args := range [][]string{
+		{"server", "sidebar", "move", "g", "--channel-type", "2", "--data", `{"category_id":null}`},
+		{"api", "PUT", "/api/v2/cli/sidebar/conversations/g/category", "--params", `{"channel_type":2}`, "--data", `{"category_id":null}`},
+	} {
+		calls.Store(0)
+		stdout, _, err := runServerV2Command(t, args...)
+		if exit := output.AsExitError(err); exit == nil || exit.Code != "CONFLICT" {
+			t.Errorf("expected definitive conflict, got %v", err)
+		}
+		if calls.Load() != 1 || stdout != "" {
+			t.Errorf("expected one request and no success; calls=%d stdout=%q", calls.Load(), stdout)
+		}
+	}
+}
+
 func TestSidebarGeneratedAndRawMutationsDoNotReplay(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, path, body string

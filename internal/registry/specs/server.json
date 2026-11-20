@@ -2313,7 +2313,7 @@
         "x-octo-strict-request-schema": true,
         "x-octo-data-envelope": true,
         "x-octo-retry": "never",
-        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/a1d9d21196cbf70e55fdf58e5b01f67a3295446c/docs/openapi/v2.yaml"
+        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/bb26caf0f15c23487c3cc112013c7f2e44dd8624/docs/openapi/v2.yaml"
       }
     },
     "/api/v2/cli/sidebar/conversations": {
@@ -2340,7 +2340,7 @@
             "name": "channel_type",
             "in": "query",
             "required": false,
-            "description": "",
+            "description": "Must be paired with target_channel_id; omit both parameters for the full list. The server rejects a lone parameter with 400 VALIDATION_ERROR.",
             "schema": {
               "type": "integer",
               "enum": [
@@ -2386,7 +2386,7 @@
         },
         "x-octo-strict-request-schema": true,
         "x-octo-data-envelope": true,
-        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/a1d9d21196cbf70e55fdf58e5b01f67a3295446c/docs/openapi/v2.yaml"
+        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/bb26caf0f15c23487c3cc112013c7f2e44dd8624/docs/openapi/v2.yaml"
       }
     },
     "/api/v2/cli/sidebar/conversations/{channel_id}/_mark_read": {
@@ -2482,7 +2482,7 @@
         "x-octo-strict-request-schema": true,
         "x-octo-data-envelope": true,
         "x-octo-retry": "never",
-        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/a1d9d21196cbf70e55fdf58e5b01f67a3295446c/docs/openapi/v2.yaml"
+        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/bb26caf0f15c23487c3cc112013c7f2e44dd8624/docs/openapi/v2.yaml"
       }
     },
     "/api/v2/cli/sidebar/conversations/{channel_id}/category": {
@@ -2568,6 +2568,9 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
           "429": {
             "$ref": "#/components/responses/RateLimited"
           },
@@ -2581,7 +2584,7 @@
         "x-octo-strict-request-schema": true,
         "x-octo-data-envelope": true,
         "x-octo-retry": "never",
-        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/a1d9d21196cbf70e55fdf58e5b01f67a3295446c/docs/openapi/v2.yaml"
+        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/bb26caf0f15c23487c3cc112013c7f2e44dd8624/docs/openapi/v2.yaml"
       }
     },
     "/api/v2/cli/sidebar/conversations/{channel_id}/follow": {
@@ -2675,7 +2678,7 @@
         "x-octo-strict-request-schema": true,
         "x-octo-data-envelope": true,
         "x-octo-retry": "never",
-        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/a1d9d21196cbf70e55fdf58e5b01f67a3295446c/docs/openapi/v2.yaml"
+        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/bb26caf0f15c23487c3cc112013c7f2e44dd8624/docs/openapi/v2.yaml"
       }
     },
     "/api/v2/cli/sidebar/conversations/{channel_id}/mute": {
@@ -2769,7 +2772,7 @@
         "x-octo-strict-request-schema": true,
         "x-octo-data-envelope": true,
         "x-octo-retry": "never",
-        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/a1d9d21196cbf70e55fdf58e5b01f67a3295446c/docs/openapi/v2.yaml"
+        "x-octo-source": "https://codex.mlamp.cn/dmwork/octo-core/octo-server/-/blob/bb26caf0f15c23487c3cc112013c7f2e44dd8624/docs/openapi/v2.yaml"
       }
     }
   },
