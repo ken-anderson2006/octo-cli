@@ -101,6 +101,9 @@ func LoadPermissionHostConfig(path string) (PermissionHostConfig, error) {
 }
 
 func permissionReadiness(incarnation string) ([]byte, error) {
+	if !controlID(incarnation) {
+		return nil, errors.New("PERMISSION_READINESS_UNAVAILABLE")
+	}
 	return permission.PrivateJSON(map[string]any{"control_version": 1, "coordinator_incarnation": incarnation})
 }
 
@@ -319,12 +322,12 @@ func servePermissionHostWithPackages(ctx context.Context, cfg PermissionHostConf
 		return err
 	}
 	defer closePermissionIO(relay)
+	secured := permission.PublicationTLSListener(relay, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}})
 	cleanup, err := writePermissionReadiness(cfg.ReadyPath, host.Incarnation())
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-	secured := permission.PublicationTLSListener(relay, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}})
 	return host.serve(ctx, control, secured)
 }
 
