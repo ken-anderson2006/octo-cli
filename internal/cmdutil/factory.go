@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/Mininglamp-OSS/octo-cli/internal/authstore"
@@ -31,6 +32,7 @@ type GlobalOptions struct {
 	NoRetry bool
 	Space   string
 
+	BotID             string
 	Profile           string
 	ProfileSet        bool
 	CredentialFile    string
@@ -71,8 +73,10 @@ type Factory struct {
 	// callable with exactly the schema get_skill/describe_op publishes.
 	GeneratedDriveShareLeaves bool
 
-	MailCredentialFunc func(context.Context) (*credential.MailCredential, error)
-	MailClientFunc     func(context.Context) (*client.Client, error)
+	// BotAPI enables the Bot API credential selectors for this invocation.
+	BotAPI bool
+
+	MailClientFunc func(context.Context) (*client.Client, error)
 
 	// ErrorEmitted is set to true after EmitError writes an envelope to
 	// stderr. The top-level main func checks this to avoid double-emitting
@@ -133,7 +137,11 @@ func NewRequestFactory(ctx context.Context, bearer string) *Factory {
 		if err != nil {
 			return nil, err
 		}
-		f.cli = client.New(cfg, f.cred, client.Options{
+		cred, err := f.Credential()
+		if err != nil {
+			return nil, err
+		}
+		f.cli = client.New(cfg, cred, client.Options{
 			Verbose: f.Globals.Verbose,
 			DryRun:  f.Globals.DryRun,
 			NoRetry: f.Globals.NoRetry,
@@ -143,9 +151,44 @@ func NewRequestFactory(ctx context.Context, bearer string) *Factory {
 		return f.cli, nil
 	}
 
+	f.MailClientFunc = func(ctx context.Context) (*client.Client, error) {
+		cfg, err := f.ValidatedRequestConfig(ctx)
+		if err != nil {
+			return nil, err
+		}
+		bot, err := f.Credential()
+		if err != nil {
+			return nil, err
+		}
+		store, err := f.AuthStore()
+		if err != nil {
+			return nil, err
+		}
+		token, err := store.ReadBotMailToken(bot, cfg.APIBaseURL)
+		if err != nil {
+			return nil, err
+		}
+		return client.New(cfg, &credential.Credential{Token: token}, client.Options{
+			Verbose: f.Globals.Verbose,
+			DryRun:  f.Globals.DryRun,
+			NoRetry: f.Globals.NoRetry,
+			Timeout: f.Globals.Timeout,
+			ErrOut:  f.IOStreams.ErrOut,
+		}), nil
+	}
+
 	f.RegistryFunc = func() *registry.Registry {
 		if f.reg == nil {
-			f.reg = registry.MustNew()
+			if os.Getenv(config.EnvCLIAPIContract) == config.CLIAPIContractBot ||
+				strings.EqualFold(strings.TrimSpace(os.Getenv(config.EnvCredentialMode)), config.CredentialModeTask) {
+				f.reg = registry.MustNewBotAPI()
+				return f.reg
+			}
+			reg, err := registry.NewCLI()
+			if err != nil {
+				panic(err)
+			}
+			f.reg = reg
 		}
 		return f.reg
 	}
@@ -214,9 +257,9 @@ func (f *Factory) BindVerifiedBotIdentity(expectedToken, expectedOrigin, uid str
 	}
 	bc, cc := *bot, *cfg
 	bc.RobotID = uid
-	cc.BotToken = bc.Token
-	f.cred, f.config, f.cli, f.botIdentityVerified = &bc, &cc, nil, true
-	f.CredentialFunc = func() (*credential.BotCredential, error) { c := bc; return &c, nil }
+	cc.Token = bc.Token
+	f.cred, f.requestConfig, f.cli = &bc, &requestConfigResult{value: &cc, validationErr: cc.Validate()}, nil
+	f.CredentialFunc = func() (*credential.Credential, error) { c := bc; return &c, nil }
 	f.ConfigFunc = func() (*config.Config, error) { c := cc; return &c, nil }
 	f.ClientFunc = func() (*client.Client, error) {
 		return client.New(&cc, &bc, client.Options{DryRun: f.Globals.DryRun, NoRetry: f.Globals.NoRetry, Timeout: f.Globals.Timeout, ErrOut: io.Discard}), nil
@@ -279,6 +322,21 @@ func (f *Factory) EmitSuccess(raw []byte) error {
 }
 
 // EmitRequestSuccess includes the profile and source selected for the request.
+func (f *Factory) EmitSuccessWithMeta(raw []byte, meta output.EnvelopeMeta) error {
+	meta.Identity = f.identityValue()
+	return f.emit(normalizeRaw(raw), meta)
+}
+
+func (f *Factory) ClientForCredential(ctx context.Context, kind string) (*client.Client, error) {
+	if kind != "mail" {
+		return f.Client()
+	}
+	if f.MailClientFunc == nil {
+		return nil, output.ErrAuth("Agent Mail credential provider is unavailable", "")
+	}
+	return f.MailClientFunc(ctx)
+}
+
 func (f *Factory) EmitRequestSuccess(raw []byte) error {
 	return f.EmitOperationSuccess(raw, nil)
 }

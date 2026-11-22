@@ -260,7 +260,7 @@ func TestBuiltBinary_XIN2453SafetyFieldsAndSingleDelivery(t *testing.T) {
 		}{{"POST", 1}, {"GET", 4}} {
 			backend.reset("503")
 			cmd := exec.Command(bin, "api", c.method, "/v1/bot/xin2453")
-			cmd.Env = append(isolatedEnv(t), "OCTO_API_BASE_URL="+backend.srv.URL)
+			cmd.Env = append(isolatedEnv(t), "OCTO_CLI_API_CONTRACT=bot", "OCTO_API_BASE_URL="+backend.srv.URL)
 			out, _ := cmd.CombinedOutput()
 			if n := backend.count(); n != c.want {
 				t.Errorf("api %s: backend deliveries = %d, want %d: %s", c.method, n, c.want, out)

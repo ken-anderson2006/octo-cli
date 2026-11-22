@@ -2,7 +2,10 @@
 // export them via `octo-cli skills` without shipping separate files alongside it.
 package skills
 
-import "embed"
+import (
+	"embed"
+	"io/fs"
+)
 
 // FS holds every markdown doc under each <skill-name>/ directory: the skill's
 // own SKILL.md plus its reference files, keyed by relative path. Listing uses
@@ -19,3 +22,15 @@ var FS embed.FS
 //
 //go:embed manifest.json
 var Manifest []byte
+
+//go:embed framework/*/*.md
+var frameworkFiles embed.FS
+
+// Framework returns the skills paired with the native v2 MCP transport.
+func Framework() fs.FS {
+	source, err := fs.Sub(frameworkFiles, "framework")
+	if err != nil {
+		panic(err)
+	}
+	return source
+}

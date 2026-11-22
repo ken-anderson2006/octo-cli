@@ -16,7 +16,7 @@ import (
 // engine streams --file with the single declared media type.
 
 func TestXIN2424RawBodyUploads(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	cases := []struct {
 		op, method, path, contentType string
 		maxBytes                      int64
@@ -56,7 +56,7 @@ func TestXIN2424RawBodyUploads(t *testing.T) {
 			var gotCT, gotPath string
 			var gotBody []byte
 			gotHeaders := http.Header{}
-			root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+			root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 				gotCT, gotPath = r.Header.Get("Content-Type"), r.URL.Path
 				gotHeaders = r.Header.Clone()
 				gotBody, _ = io.ReadAll(r.Body)
@@ -102,7 +102,7 @@ func TestXIN2424RawBodyRefusesEmptyAndOversizedFiles(t *testing.T) {
 		{ok, ""},
 	} {
 		hits := 0
-		root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+		root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 			hits++
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"attachId":"a"}`))

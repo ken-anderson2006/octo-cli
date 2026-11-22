@@ -2,6 +2,7 @@
 package credential
 
 import (
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -13,7 +14,11 @@ type Credential struct {
 	SpaceID string
 	Source  string
 	Profile string
+	RobotID string
+	BotKind string
 }
+
+var ErrNoCredential = errors.New("no credential found")
 
 type inputError string
 

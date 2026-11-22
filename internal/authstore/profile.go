@@ -39,6 +39,7 @@ type Config struct {
 type Profile struct {
 	APIBaseURL  string      `json:"api_base_url"`
 	SpaceID     string      `json:"space_id"`
+	BotID       string      `json:"bot_id,omitempty"`
 	TokenSource TokenSource `json:"token_source"`
 }
 
@@ -86,7 +87,10 @@ func (p *Profile) Scope() (Profile, error) {
 	if err != nil {
 		return Profile{}, invalidProfile("profile has an invalid API origin")
 	}
-	if err := ValidateSpace(p.SpaceID); err != nil {
+	if p.BotID != "" && !validID(p.BotID) {
+		return Profile{}, invalidProfile("profile has an invalid Bot ID")
+	}
+	if (p.BotID == "" || p.SpaceID != "") && ValidateSpace(p.SpaceID) != nil {
 		return Profile{}, invalidProfile("profile has an invalid Space ID")
 	}
 	normalized := *p

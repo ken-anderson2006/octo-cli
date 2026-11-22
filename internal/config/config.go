@@ -13,13 +13,20 @@ import (
 
 // Environment variable names and the default business gateway.
 const (
-	EnvAPIBaseURL     = "OCTO_API_BASE_URL"
-	EnvToken          = "OCTO_TOKEN"
-	EnvTokenFile      = "OCTO_TOKEN_FILE"
-	EnvProfile        = "OCTO_PROFILE"
-	EnvSpaceID        = "OCTO_SPACE_ID"
-	EnvFormat         = "OCTO_FORMAT"
-	DefaultAPIBaseURL = "https://im.deepminer.com.cn"
+	EnvAPIBaseURL      = "OCTO_API_BASE_URL"
+	EnvToken           = "OCTO_TOKEN"
+	EnvBotToken        = "OCTO_BOT_TOKEN"
+	EnvBotID           = "OCTO_BOT_ID"
+	EnvTaskToken       = "OCTO_TASK_TOKEN"
+	EnvCLIAPIContract  = "OCTO_CLI_API_CONTRACT"
+	CLIAPIContractBot  = "bot"
+	EnvCredentialMode  = "OCTO_CREDENTIAL_MODE"
+	CredentialModeTask = "task"
+	EnvTokenFile       = "OCTO_TOKEN_FILE"
+	EnvProfile         = "OCTO_PROFILE"
+	EnvSpaceID         = "OCTO_SPACE_ID"
+	EnvFormat          = "OCTO_FORMAT"
+	DefaultAPIBaseURL  = "https://im.deepminer.com.cn"
 )
 
 // Config holds the resolved business target, credential, and output format.

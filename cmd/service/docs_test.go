@@ -25,7 +25,7 @@ import (
 // (members, comments, versions, attachments) generate from the dotted
 // operationIds without any Go registration code.
 func TestDocs_TreeShape(t *testing.T) {
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {})
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {})
 
 	docs := findCmd(root, "docs")
 	if docs == nil {
@@ -67,7 +67,7 @@ func TestDocs_TreeShape(t *testing.T) {
 // service become nested resource commands, the last is the leaf verb) and that
 // the method/path match the verified octo-docs-backend bot routes.
 func TestDocs_RegistryShape(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 
 	type want struct{ method, path string }
 	cases := map[string]want{
@@ -196,7 +196,7 @@ func TestDocsMembersSet_PrincipalSpaceIDIsOptionalBodyField(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var body map[string]any
-			root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+			root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Fatalf("decode body: %v", err)
 				}
@@ -223,7 +223,7 @@ func TestDocsMembersSet_PrincipalSpaceIDIsOptionalBodyField(t *testing.T) {
 func TestDocsMembersRemove_RequiresAndSendsPrincipalSpaceID(t *testing.T) {
 	t.Run("requires principal Space", func(t *testing.T) {
 		requests := 0
-		root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+		root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 			requests++
 		})
 		root.SetArgs([]string{"docs", "members", "remove", "doc-1", "user-1"})
@@ -237,7 +237,7 @@ func TestDocsMembersRemove_RequiresAndSendsPrincipalSpaceID(t *testing.T) {
 
 	t.Run("sends exact principal Space", func(t *testing.T) {
 		var gotQuery url.Values
-		root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+		root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 			gotQuery = r.URL.Query()
 			_, _ = w.Write([]byte(`{"ok":true}`))
 		})
@@ -257,7 +257,7 @@ func TestDocsMembersRemove_RequiresAndSendsPrincipalSpaceID(t *testing.T) {
 // global persistent output --format reachable) while the wire param stays
 // ?format=. The leaf must NOT declare a local --format flag.
 func TestDocsSceneExport_ImageFormatFlagNoGlobalShadow(t *testing.T) {
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {})
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {})
 
 	docs := findCmd(root, "docs")
 	scene := findCmd(docs, "scene")
@@ -280,7 +280,7 @@ func TestDocsSceneExport_ImageFormatFlagNoGlobalShadow(t *testing.T) {
 // --image-format lands on the wire as ?format= (the api name is preserved).
 func TestDocsSceneExport_ImageFormatMapsToWireFormat(t *testing.T) {
 	var gotPath, gotQuery string
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
 		w.Header().Set("Content-Type", "image/svg+xml")
 		_, _ = w.Write([]byte("<svg/>"))
@@ -300,7 +300,7 @@ func TestDocsSceneExport_ImageFormatMapsToWireFormat(t *testing.T) {
 // TestDocs_SpaceHeaderDeclaredFalse confirms the docs spec declares the bot
 // mount's server-resolved space (x-octo-space-header:false), matching bot.json.
 func TestDocs_SpaceHeaderDeclaredFalse(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	d, ok := reg.GetOperation("docs.create")
 	if !ok {
 		t.Fatal("docs.create not in registry")
@@ -317,7 +317,7 @@ func TestDocs_SpaceHeaderDeclaredFalse(t *testing.T) {
 // x-octo-pagination: their envelopes ({total,items} / {items,nextCursor}) do
 // not match the engine's {data,pagination} walker, so --page-all is not offered.
 func TestDocs_NoPagination(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	for _, id := range []string{"docs.list", "docs.comments.list", "docs.versions.list"} {
 		d, ok := reg.GetOperation(id)
 		if !ok {
@@ -328,7 +328,7 @@ func TestDocs_NoPagination(t *testing.T) {
 		}
 	}
 	// And the generated command must not expose --page-all.
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {})
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {})
 	list := findCmd(findCmd(root, "docs"), "list")
 	if list == nil {
 		t.Fatal("docs list command missing")
@@ -341,7 +341,7 @@ func TestDocs_NoPagination(t *testing.T) {
 func TestDocsSearch_FlagsAndRequestBody(t *testing.T) {
 	var gotMethod, gotPath string
 	var gotBody map[string]any
-	root, tf, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, tf, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Errorf("decode body: %v", err)
@@ -401,7 +401,7 @@ func TestDocsSearch_PageAllUsesBodyCursorAndStopsWithoutNextCursor(t *testing.T)
 		`{"total":3,"items":[{"docId":"d3"}]}`,
 	}
 	var cursors []string
-	root, tf, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, tf, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		cursor, _ := body["cursor"].(string)
@@ -434,7 +434,7 @@ func TestDocsSearch_PageAllUsesBodyCursorAndStopsWithoutNextCursor(t *testing.T)
 
 func TestDocsSearch_PageAllRejectsRepeatedCursor(t *testing.T) {
 	calls := 0
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"total":99,"items":[{"docId":"d"}],"nextCursor":"same"}`))
@@ -452,7 +452,7 @@ func TestDocsSearch_PageAllRejectsRepeatedCursor(t *testing.T) {
 
 func TestDocsSearch_FinalPageStopsWithoutCursor(t *testing.T) {
 	calls := 0
-	root, tf, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, tf, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"total":1,"items":[{"docId":"d1"}],"nextCursor":""}`))
@@ -479,7 +479,7 @@ func TestDocsSearch_FinalPageStopsWithoutCursor(t *testing.T) {
 
 func TestDocsSearch_PageLimitPreemptsLoopDetection(t *testing.T) {
 	calls := 0
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"total":99,"items":[{"docId":"d"}],"nextCursor":"same"}`))
@@ -495,7 +495,7 @@ func TestDocsSearch_PageLimitPreemptsLoopDetection(t *testing.T) {
 
 func TestDocsSearch_PageAllSeedsManualCursor(t *testing.T) {
 	calls := 0
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -529,7 +529,7 @@ func TestDocsSearch_PageAllSeedsManualCursor(t *testing.T) {
 func TestDocsCreate_PostsBodyNoSpaceHeader(t *testing.T) {
 	var gotMethod, gotPath, gotAuth, gotSpace string
 	var gotBody map[string]any
-	root, _, _ := rootWithServiceSpaced(t, "space-1", func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotServiceSpaced(t, "space-1", func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
 		gotSpace = r.Header.Get("X-Space-Id")
@@ -563,11 +563,18 @@ func TestDocsCreate_PostsBodyNoSpaceHeader(t *testing.T) {
 // x-octo-space-header:false suppresses it.
 func TestSpacedCredential_SendsSpaceHeaderOnDefaultOp(t *testing.T) {
 	var gotSpace string
-	root, _, _ := rootWithServiceSpaced(t, "space-1", func(w http.ResponseWriter, r *http.Request) {
+	root, tf, _ := rootWithBotServiceSpaced(t, "space-1", func(w http.ResponseWriter, r *http.Request) {
 		gotSpace = r.Header.Get("X-Space-Id")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"matter":{"id":"m1"}}`))
 	})
+	// Register the disabled service only in this transport fixture.
+	matter := ensureServiceCmd(root, "matter")
+	op, ok := tf.Registry().GetOperation("matter.create")
+	if !ok {
+		t.Fatal("expected matter.create fixture")
+	}
+	attachOperation(matter, tf.Factory, op)
 	root.SetArgs([]string{"matter", "create", "--title", "Case"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -586,7 +593,7 @@ func TestSpacedCredential_SendsSpaceHeaderOnDefaultOp(t *testing.T) {
 // caught here rather than masked by the always-true matter domain.
 func TestMessageSend_SendsSpaceHeader(t *testing.T) {
 	var gotSpace, gotPath string
-	root, _, _ := rootWithServiceSpaced(t, "space-1", func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotServiceSpaced(t, "space-1", func(w http.ResponseWriter, r *http.Request) {
 		gotSpace = r.Header.Get("X-Space-Id")
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
@@ -608,7 +615,7 @@ func TestMessageSend_SendsSpaceHeader(t *testing.T) {
 // query string.
 func TestDocsList_QueryParamsFromFlags(t *testing.T) {
 	var gotQuery, gotPath string
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotQuery = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
@@ -631,7 +638,7 @@ func TestDocsList_QueryParamsFromFlags(t *testing.T) {
 // TestDocsGet_PathArgInURL checks the single positional arg lands in the path.
 func TestDocsGet_PathArgInURL(t *testing.T) {
 	var gotMethod, gotPath string
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"docId":"abc"}`))
@@ -650,7 +657,7 @@ func TestDocsGet_PathArgInURL(t *testing.T) {
 func TestDocsMembersSet_PutUpsertBody(t *testing.T) {
 	var gotMethod, gotPath string
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(200)
@@ -671,7 +678,7 @@ func TestDocsMembersSet_PutUpsertBody(t *testing.T) {
 // TestDocsMembersRemove_TwoPathArgs checks both positional args land in the path.
 func TestDocsMembersRemove_TwoPathArgs(t *testing.T) {
 	var gotMethod, gotPath, gotSpace string
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		gotSpace = r.URL.Query().Get("principalSpaceId")
 		w.WriteHeader(200)
@@ -695,7 +702,7 @@ func TestDocsMembersRemove_TwoPathArgs(t *testing.T) {
 func TestDocsShareGet_ReadPath(t *testing.T) {
 	var gotMethod, gotPath string
 	var gotBody []byte
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		gotBody, _ = io.ReadAll(r.Body)
 		w.WriteHeader(200)
@@ -719,7 +726,7 @@ func TestDocsShareGet_ReadPath(t *testing.T) {
 func TestDocsShareSet_RestrictedBody(t *testing.T) {
 	var gotMethod, gotPath string
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(200)
@@ -745,7 +752,7 @@ func TestDocsShareSet_RestrictedBody(t *testing.T) {
 // x-octo-flag aliases (--scope, --role) do not leak into the body.
 func TestDocsShareSet_AnyoneEditBody(t *testing.T) {
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{"docId":"d1","shareScope":"anyone_in_space","shareRole":"edit"}`))
@@ -770,7 +777,7 @@ func TestDocsShareSet_AnyoneEditBody(t *testing.T) {
 // x-octo-flag) and NOT the camelCase property names, while --data stays
 // available for the raw-body escape hatch.
 func TestDocsShareSet_FlagAliases(t *testing.T) {
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {})
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {})
 	docs := findCmd(root, "docs")
 	share := findCmd(docs, "share")
 	if share == nil {
@@ -796,7 +803,7 @@ func TestDocsShareSet_FlagAliases(t *testing.T) {
 func TestDocsCommentsAdd_ReplyBody(t *testing.T) {
 	var gotPath string
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(201)
@@ -824,7 +831,7 @@ func TestDocsCommentsAdd_ReplyBody(t *testing.T) {
 func TestDocsCommentsAdd_RootAnchorText(t *testing.T) {
 	var gotPath, gotMethod string
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(201)
@@ -866,7 +873,7 @@ func TestDocsCommentsAdd_RootAnchorText(t *testing.T) {
 // still carries {anchorStart, anchorEnd} unchanged.
 func TestDocsCommentsAdd_RootLegacyAnchors(t *testing.T) {
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(201)
 		_, _ = w.Write([]byte(`{"id":9}`))
@@ -889,7 +896,7 @@ func TestDocsCommentsAdd_RootLegacyAnchors(t *testing.T) {
 // path args.
 func TestDocsCommentsDelete_HardQuery(t *testing.T) {
 	var gotMethod, gotPath, gotQuery string
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath, gotQuery = r.Method, r.URL.Path, r.URL.RawQuery
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{"id":5}`))
@@ -909,7 +916,7 @@ func TestDocsCommentsDelete_HardQuery(t *testing.T) {
 // TestDocsVersionsRestore_PostNestedPath checks a two-path-arg nested POST.
 func TestDocsVersionsRestore_PostNestedPath(t *testing.T) {
 	var gotMethod, gotPath string
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{"restoredFrom":3,"newDocVersionSeq":9}`))
@@ -928,7 +935,7 @@ func TestDocsVersionsRestore_PostNestedPath(t *testing.T) {
 func TestDocsAttachmentsResolve_ArrayBody(t *testing.T) {
 	var gotPath string
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(200)
@@ -951,7 +958,7 @@ func TestDocsAttachmentsResolve_ArrayBody(t *testing.T) {
 // and mime as strings and sizeBytes as a JSON number.
 func TestDocsAttachmentsPresign_BodyTypes(t *testing.T) {
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{"attachId":"at1","uploadUrl":"https://x"}`))
@@ -977,7 +984,7 @@ func TestDocsAttachmentsPresign_BodyTypes(t *testing.T) {
 // caller can capture the base-version token for a follow-up edit.
 func TestDocsContentGet_ReadsBodyAndBaseVersion(t *testing.T) {
 	var gotMethod, gotPath string
-	root, tf, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, tf, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"docId":"d1","doc":{"type":"doc","content":[]},"schemaVersion":3,"baseVersion":"BV_ABC=="}`))
@@ -1011,7 +1018,7 @@ func TestDocsContentGet_ReadsBodyAndBaseVersion(t *testing.T) {
 func TestDocsContentEdit_SendsOpsBatchAndIfMatch(t *testing.T) {
 	var gotMethod, gotPath, gotIfMatch string
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		gotIfMatch = r.Header.Get("If-Match")
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
@@ -1048,7 +1055,7 @@ func TestDocsContentEdit_SendsOpsBatchAndIfMatch(t *testing.T) {
 // mirroring the backend's mandatory optimistic-concurrency guard.
 func TestDocsContentEdit_RequiresBaseVersion(t *testing.T) {
 	called := false
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	})
 	root.SetArgs([]string{"docs", "content", "edit", "d1", "--data", `{"ops":[]}`})
@@ -1066,7 +1073,7 @@ func TestDocsContentEdit_RequiresBaseVersion(t *testing.T) {
 // sheetDataValidations, baseVersion} through the success envelope.
 func TestDocsSheetGet_WholeSheet(t *testing.T) {
 	var gotMethod, gotPath, gotQuery string
-	root, tf, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, tf, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath, gotQuery = r.Method, r.URL.Path, r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"docId":"d1","sheetCells":{"default!0:0":{"v":"A1"}},"sheetDims":{"c0":120},"sheetDataValidations":{"default":[{"uid":"checkbox-a1","type":"checkbox","formula1":"1","formula2":"0","ranges":[{"startRow":0,"startColumn":0,"endRow":0,"endColumn":0}]}]},"baseVersion":"BV_ABC=="}`))
@@ -1105,7 +1112,7 @@ func TestDocsSheetGet_WholeSheet(t *testing.T) {
 // sheet that a whole-sheet read would reject with 413.
 func TestDocsSheetGet_Paginated(t *testing.T) {
 	var gotQuery url.Values
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.Query()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"docId":"d1","sheetCells":{},"baseVersion":"BV==","hasMore":true,"nextCursor":"CURS_NEXT"}`))
@@ -1129,7 +1136,7 @@ func TestDocsSheetGet_Paginated(t *testing.T) {
 func TestDocsSheetEdit_SendsCellsBatchAndIfMatch(t *testing.T) {
 	var gotMethod, gotPath, gotIfMatch string
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		gotIfMatch = r.Header.Get("If-Match")
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
@@ -1197,7 +1204,7 @@ func TestDocsSheetEdit_SendsCellsBatchAndIfMatch(t *testing.T) {
 func TestDocsSheetReplace_SendsAtomicRequestAndIfMatch(t *testing.T) {
 	var gotMethod, gotPath, gotIfMatch string
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		gotIfMatch = r.Header.Get("If-Match")
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
@@ -1234,7 +1241,7 @@ func TestDocsSheetReplace_SendsAtomicRequestAndIfMatch(t *testing.T) {
 
 func TestDocsSheetReplace_RequiresBaseVersion(t *testing.T) {
 	called := false
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	})
 	root.SetArgs([]string{"docs", "sheet", "replace", "d1", "--data", `{"findString":"old","replaceString":"new"}`})
@@ -1248,7 +1255,7 @@ func TestDocsSheetReplace_RequiresBaseVersion(t *testing.T) {
 
 func TestDocsSheetReplace_UsesKebabCaseFlags(t *testing.T) {
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
@@ -1289,7 +1296,7 @@ func TestDocsSheetReplace_AllowsEmptyReplacement(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var gotBody map[string]any
-			root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+			root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 				if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 					t.Fatalf("decode request: %v", err)
 				}
@@ -1320,7 +1327,7 @@ func TestDocsSheetReplace_ValidatesRequiredBodyAndFindBy(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
-			root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+			root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 				called = true
 			})
 			root.SetArgs([]string{"docs", "sheet", "replace", "d1", "--base-version", "BV", "--data", tc.data})
@@ -1338,7 +1345,7 @@ func TestDocsSheetReplace_ValidatesRequiredBodyAndFindBy(t *testing.T) {
 func TestDocsSheetRowsInsert_SendsFlagsAsGuardedStructuralRequest(t *testing.T) {
 	var gotMethod, gotPath, gotIfMatch string
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		gotIfMatch = r.Header.Get("If-Match")
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
@@ -1368,7 +1375,7 @@ func TestDocsSheetRowsInsert_SendsFlagsAsGuardedStructuralRequest(t *testing.T) 
 
 func TestDocsSheetRowsInsert_PreservesZeroAnchor(t *testing.T) {
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
@@ -1403,7 +1410,7 @@ func TestDocsSheetRowsInsert_ValidatesRequiredFlagsAndBoundsLocally(t *testing.T
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
-			root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) { called = true })
+			root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) { called = true })
 			root.SetArgs(append([]string{"docs", "sheet", "rows", "insert", "d1"}, tc.args...))
 			err := root.Execute()
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -1447,7 +1454,7 @@ func TestDocsSheetOtherStructuralEdits_SendGuardedRequests(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var gotMethod, gotPath, gotIfMatch string
 			var gotBody map[string]any
-			root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+			root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 				gotMethod, gotPath = r.Method, r.URL.Path
 				gotIfMatch = r.Header.Get("If-Match")
 				if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
@@ -1498,7 +1505,7 @@ func TestDocsSheetOtherStructuralEdits_ValidateBoundsLocally(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
-			root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) { called = true })
+			root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) { called = true })
 			root.SetArgs(append([]string{"docs", "sheet"}, tc.args...))
 			err := root.Execute()
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -1518,7 +1525,7 @@ func TestDocsSheetOtherStructuralEdits_ValidateBoundsLocally(t *testing.T) {
 func TestDocsSheetEdit_SendsP0ResourcesAndIfMatch(t *testing.T) {
 	var gotMethod, gotPath, gotIfMatch string
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		gotIfMatch = r.Header.Get("If-Match")
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
@@ -1674,7 +1681,7 @@ func TestDocsSheetEdit_SendsP0ResourcesAndIfMatch(t *testing.T) {
 // mirroring the backend's mandatory optimistic-concurrency guard.
 func TestDocsSheetEdit_RequiresBaseVersion(t *testing.T) {
 	called := false
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	})
 	root.SetArgs([]string{"docs", "sheet", "edit", "d1", "--data", `{"cells":{}}`})
@@ -1693,7 +1700,7 @@ func TestDocsSheetEdit_RequiresBaseVersion(t *testing.T) {
 // follow-up edit.
 func TestDocsSceneGet_ReadsSceneAndBaseVersion(t *testing.T) {
 	var gotMethod, gotPath string
-	root, tf, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, tf, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"docId":"d1","elements":[{"id":"e1","type":"rectangle","version":3}],"files":{},"schemaVersion":1,"baseVersion":"BV_ABC=="}`))
@@ -1727,7 +1734,7 @@ func TestDocsSceneGet_ReadsSceneAndBaseVersion(t *testing.T) {
 func TestDocsSceneEdit_SendsBatchAndIfMatch(t *testing.T) {
 	var gotMethod, gotPath, gotIfMatch string
 	var gotBody map[string]any
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		gotIfMatch = r.Header.Get("If-Match")
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
@@ -1768,7 +1775,7 @@ func TestDocsSceneEdit_SendsBatchAndIfMatch(t *testing.T) {
 // mirroring the backend's mandatory optimistic-concurrency guard.
 func TestDocsSceneEdit_RequiresBaseVersion(t *testing.T) {
 	called := false
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	})
 	root.SetArgs([]string{"docs", "scene", "edit", "d1", "--data", `{"elements":[]}`})
@@ -1785,7 +1792,7 @@ func TestDocsSceneEdit_RequiresBaseVersion(t *testing.T) {
 // index-less whiteboard elements can no longer reach the backend (XIN-792).
 func TestDocsSceneEdit_RejectsIndexlessElement(t *testing.T) {
 	called := false
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	})
 	batch := `{"elements":[{"id":"e1","type":"rectangle","version":4}]}`
@@ -1802,7 +1809,7 @@ func TestDocsSceneEdit_RejectsIndexlessElement(t *testing.T) {
 // XIN-792 (`r00000003`) — a malformed fractional-index — is rejected locally.
 func TestDocsSceneEdit_RejectsInvalidIndex(t *testing.T) {
 	called := false
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	})
 	batch := `{"elements":[{"id":"e1","type":"rectangle","version":4,"index":"r00000003"}]}`
@@ -1820,7 +1827,7 @@ func TestDocsSceneEdit_RejectsInvalidIndex(t *testing.T) {
 // upserted elements.
 func TestDocsSceneEdit_DeleteOnlyBatchAllowed(t *testing.T) {
 	called := false
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{"docId":"d1","bytes":8,"baseVersion":"BV_NEXT==","newDocVersionSeq":8}`))

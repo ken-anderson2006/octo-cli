@@ -63,7 +63,7 @@ var capabilityAliasCanaries = []string{
 // case-fold spelling of a secret path is collected, and nonsecret values that
 // merely sit next to them are not.
 func TestXIN2441CollectsCaseFoldSecretPaths(t *testing.T) {
-	op, _ := registry.MustNew().GetOperation("capability.install")
+	op, _ := registry.MustNewBotAPI().GetOperation("capability.install")
 	var body any
 	if err := json.Unmarshal([]byte(capabilityAliasInstall), &body); err != nil {
 		t.Fatal(err)
@@ -150,8 +150,8 @@ func capabilityRoot(t *testing.T, apiBase string, opts client.Options, dryRun bo
 func capabilityRootData(t *testing.T, apiBase string, opts client.Options, dryRun bool, data string) (*cobra.Command, *cmdutil.TestFactory) {
 	t.Helper()
 	tf := cmdutil.NewTestFactory()
-	cfg := &config.Config{APIBaseURL: apiBase, BotToken: "bf_bot", Format: "json"}
-	cred := &credential.BotCredential{Token: "bf_bot", Source: "test"}
+	cfg := &config.Config{APIBaseURL: apiBase, Token: "bf_bot", Format: "json"}
+	cred := &credential.Credential{Token: "bf_bot", Source: "test"}
 	tf.SetConfig(cfg)
 	tf.SetCredential(cred)
 	tf.Globals.DryRun = dryRun
@@ -159,7 +159,7 @@ func capabilityRootData(t *testing.T, apiBase string, opts client.Options, dryRu
 		opts.ErrOut = tf.ErrOut
 	}
 	tf.SetClient(client.New(cfg, cred, opts))
-	tf.RegistryFunc = registry.MustNew
+	tf.RegistryFunc = registry.MustNewBotAPI
 	root := &cobra.Command{Use: "octo-cli", SilenceUsage: true, SilenceErrors: true}
 	RegisterServiceCommands(root, tf.Factory)
 	root.SetArgs([]string{"loop", "capability", "install", "--workspace-id", "22222222-2222-4222-8222-222222222222",

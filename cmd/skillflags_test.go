@@ -20,7 +20,7 @@ func TestSkills_EveryDocumentedFlagExists(t *testing.T) {
 	tf.RegistryFunc = registry.MustNew
 	root := NewRootCmd(tf.Factory)
 
-	entries, err := fs.Glob(skills.FS, "*/*.md")
+	entries, err := fs.Glob(skills.Framework(), "*/*.md")
 	if err != nil {
 		t.Fatalf("glob skills: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestSkills_EveryDocumentedFlagExists(t *testing.T) {
 
 	var checkedCommands, checkedFlags, unresolved int
 	for _, name := range entries {
-		raw, rerr := fs.ReadFile(skills.FS, name)
+		raw, rerr := fs.ReadFile(skills.Framework(), name)
 		if rerr != nil {
 			t.Fatalf("read %s: %v", name, rerr)
 		}

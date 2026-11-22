@@ -40,7 +40,7 @@ func ServeHTTP(ctx context.Context, listener net.Listener, version string, optio
 	// deadlines and client disconnect handling until the grace period expires.
 	requestBase, cancelRequests := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelRequests()
-	transport := &httpTransport{buildVersion: version, execute: execute, fsys: skills.FS}
+	transport := &httpTransport{buildVersion: version, execute: execute, fsys: skills.Framework()}
 	mux := http.NewServeMux()
 	mux.Handle(httpEndpointPath, transport)
 	mux.HandleFunc("GET /v1/skills", transport.publicSkills)
@@ -217,7 +217,7 @@ func acceptsJSON(accept string) bool {
 	return false
 }
 
-func (h *httpTransport) dispatch(ctx context.Context, msg *request, version, bearer string) *response {
+func (h *httpTransport) dispatch(ctx context.Context, msg *frameworkRequest, version, bearer string) *response {
 	switch msg.Method {
 	case "initialize":
 		_, reply := initialize(msg, h.buildVersion, false)

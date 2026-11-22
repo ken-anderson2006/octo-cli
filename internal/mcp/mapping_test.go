@@ -13,7 +13,7 @@ import (
 // coverage, a reference file or anchor goes missing, a disabled service and its
 // skill fall out of sync, or a summary/advice overflows.
 func TestBuildMapping_EmbeddedDataIsValid(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	m, err := BuildMapping(reg)
 	if err != nil {
 		t.Fatalf("embedded skill navigation mapping is invalid:\n%v", err)
@@ -39,7 +39,7 @@ func containsSubstr(problems []string, substr string) bool {
 }
 
 func TestValidate_UnknownServiceReference(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	m := &Mapping{serviceToSkill: map[string]string{}, skills: map[string]*skillMeta{}, ops: map[string]*opMeta{}}
 	metas := map[string]*skillMeta{"octo-x": {Name: "octo-x", Services: []string{"not-a-service"}}}
 	problems := m.validate(reg, &manifestFile{}, metas)
@@ -49,7 +49,7 @@ func TestValidate_UnknownServiceReference(t *testing.T) {
 }
 
 func TestValidate_ManifestOpMustExistAndBeEnabled(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	m := &Mapping{serviceToSkill: map[string]string{}, skills: map[string]*skillMeta{}, ops: map[string]*opMeta{}}
 	metas := map[string]*skillMeta{"octo-messaging": {Name: "octo-messaging"}}
 	mf := &manifestFile{Skills: map[string]manifestSkill{
@@ -62,7 +62,7 @@ func TestValidate_ManifestOpMustExistAndBeEnabled(t *testing.T) {
 }
 
 func TestValidate_EnabledServiceMustHaveCoverage(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	// Empty serviceToSkill: every enabled service is uncovered.
 	m := &Mapping{serviceToSkill: map[string]string{}, skills: map[string]*skillMeta{}, ops: map[string]*opMeta{}}
 	problems := m.validate(reg, &manifestFile{}, map[string]*skillMeta{})
@@ -72,7 +72,7 @@ func TestValidate_EnabledServiceMustHaveCoverage(t *testing.T) {
 }
 
 func TestValidate_ReferenceFileMustExist(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	m := &Mapping{serviceToSkill: map[string]string{}, skills: map[string]*skillMeta{}, ops: map[string]*opMeta{}}
 	metas := map[string]*skillMeta{"octo-docs": {Name: "octo-docs"}}
 	mf := &manifestFile{Skills: map[string]manifestSkill{
@@ -85,7 +85,7 @@ func TestValidate_ReferenceFileMustExist(t *testing.T) {
 }
 
 func TestValidate_SectionAnchorMustExist(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	m := &Mapping{serviceToSkill: map[string]string{}, skills: map[string]*skillMeta{}, ops: map[string]*opMeta{}}
 	metas := map[string]*skillMeta{"octo-mail": {Name: "octo-mail"}}
 	mf := &manifestFile{Skills: map[string]manifestSkill{
@@ -100,7 +100,7 @@ func TestValidate_SectionAnchorMustExist(t *testing.T) {
 }
 
 func TestValidate_DisabledServiceSkillSync(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	m := &Mapping{serviceToSkill: map[string]string{}, skills: map[string]*skillMeta{}, ops: map[string]*opMeta{}}
 	// matter is a disabled service; a skill claiming it must itself be disabled.
 	metas := map[string]*skillMeta{"octo-x": {Name: "octo-x", Services: []string{"matter"}, Disabled: false}}
@@ -111,7 +111,7 @@ func TestValidate_DisabledServiceSkillSync(t *testing.T) {
 }
 
 func TestValidate_LengthAndLevelCaps(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	m := &Mapping{
 		serviceToSkill: map[string]string{},
 		skills:         map[string]*skillMeta{},

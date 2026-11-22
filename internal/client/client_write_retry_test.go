@@ -94,7 +94,7 @@ func TestDo_NonIdempotentWriteIsDeliveredOnceOnTimeoutAndCancel(t *testing.T) {
 	t.Run("client timeout", func(t *testing.T) {
 		var hits int32
 		srv := writeRetryBackend(t, "hang", &hits)
-		c := New(&config.Config{APIBaseURL: srv.URL}, &credential.BotCredential{Token: "app_test"}, Options{Timeout: "200ms"})
+		c := New(&config.Config{APIBaseURL: srv.URL}, &credential.Credential{Token: "app_test"}, Options{Timeout: "200ms"})
 		_, err := c.Do(context.Background(), &Request{Method: http.MethodPost, Path: "/v1/bot/sendMessage", Body: map[string]any{"content": "once"}})
 		if got := atomic.LoadInt32(&hits); got != 1 {
 			t.Fatalf("backend deliveries = %d, want exactly 1", got)

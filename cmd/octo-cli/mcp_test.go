@@ -179,7 +179,7 @@ func startMCPBinary(t *testing.T, bin string, launchFlags []string, env ...strin
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
-	cmd := exec.CommandContext(ctx, bin, append(launchFlags, "mcp", "serve")...)
+	cmd := exec.CommandContext(ctx, bin, append(launchFlags, "mcp", "serve", "--framework")...)
 	cmd.Env = hermeticEnv(append([]string{"OCTO_CONFIG_DIR=" + filepath.Join(t.TempDir(), "cli")}, env...)...)
 	in, err := cmd.StdinPipe()
 	if err != nil {

@@ -13,7 +13,7 @@ import (
 // disabled (withheld), for exercising the withhold path. Fails if none exists.
 func disabledServiceOp(t *testing.T) string {
 	t.Helper()
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	for _, svc := range reg.ListServices() {
 		if !reg.ServiceDisabled(svc) {
 			continue

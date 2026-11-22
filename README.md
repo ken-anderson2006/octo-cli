@@ -79,7 +79,7 @@ Project membership, resource ownership and lifecycle state.
 
 ### Declarative Loop inputs
 
-The 126 operations are generated from `internal/registry/specs/loop.json` by the
+The 126 operations are generated from `internal/registry/specs/v2/loop.json` by the
 shared command engine. Use the declared command and field names:
 
 - Project resources use `project resource create` and `project resource delete`.
@@ -202,13 +202,13 @@ and [Chinese guide](docs/mcp-integration.zh-CN.md).
 
 ### Local stdio
 
-Start `octo-cli mcp serve` from an MCP client's stdio configuration using the
+Start `octo-cli mcp serve --framework` from an MCP client's stdio configuration using the
 installed CLI binary:
 
 ```json
 {
   "command": "/absolute/path/to/octo-cli",
-  "args": ["mcp", "serve"],
+  "args": ["mcp", "serve", "--framework"],
   "env": {
     "OCTO_TOKEN_FILE": "/absolute/path/to/octo.token",
     "OCTO_API_BASE_URL": "https://api.example.invalid"
@@ -220,7 +220,7 @@ installed CLI binary:
 messages. Closing stdin cancels active calls and shuts down the server.
 
 The launcher can also provide `OCTO_TOKEN` or select a saved profile with
-`["--profile", "agent", "mcp", "serve"]`. The normal CLI credential precedence
+`["--profile", "agent", "mcp", "serve", "--framework"]`. The normal CLI credential precedence
 applies. The server can initialize and list tools before a credential is
 available. Authenticated commands resolve their credentials on invocation.
 
@@ -309,7 +309,11 @@ or temporary installs. Package-manager
 failures stop the command; an installation failure can leave partially changed
 files, so inspect the structured error before retrying.
 
-## MCP server
+## Bot API MCP facades
+
+The policy-checked facades use the Bot API catalog, including Fleet v1. For
+direct CLI use of that same catalog, set `OCTO_CLI_API_CONTRACT=bot`.
+Fleet v2 remains the default for direct Loop commands.
 
 `octo-cli mcp serve` serves newline-delimited stdio; `--http 127.0.0.1:8080`
 serves JSON-RPC over POST. Each tool call authenticates a `bf_` User Bot,

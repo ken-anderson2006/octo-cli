@@ -14,7 +14,7 @@ func TestXIN2549CLIContext(t *testing.T) {
 	for _, expired := range []bool{false, true} {
 		t.Run(map[bool]string{false: "cancelled", true: "expired"}[expired], func(t *testing.T) {
 			var hits atomic.Int32
-			root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) { hits.Add(1); w.Write([]byte(`{}`)) })
+			root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) { hits.Add(1); w.Write([]byte(`{}`)) })
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 			if expired {

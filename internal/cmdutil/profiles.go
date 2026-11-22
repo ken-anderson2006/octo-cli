@@ -3,6 +3,7 @@ package cmdutil
 import (
 	"context"
 	"os"
+	"strings"
 
 	"github.com/Mininglamp-OSS/octo-cli/internal/authstore"
 	"github.com/Mininglamp-OSS/octo-cli/internal/config"
@@ -82,6 +83,11 @@ func (f *Factory) externalSource() (externalSource, error) {
 	case hasFile:
 		return externalSource{tag: "env:" + config.EnvTokenFile, value: envFile, isFile: true}, nil
 	default:
+		if f.BotAPI {
+			if token := strings.TrimSpace(os.Getenv(config.EnvBotToken)); token != "" {
+				return externalSource{tag: "env:" + config.EnvBotToken, value: token}, nil
+			}
+		}
 		return externalSource{}, nil
 	}
 }
@@ -101,6 +107,15 @@ func (s externalSource) read() (string, error) {
 }
 
 func (f *Factory) resolveRequest(ctx context.Context) (*config.Config, *credential.Credential, error) {
+	if f.requestBearer == "" {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(config.EnvCredentialMode))) {
+		case config.CredentialModeTask:
+			return f.resolveTaskRequest()
+		case "":
+		default:
+			return nil, nil, output.ErrValidation("unsupported OCTO_CREDENTIAL_MODE", "")
+		}
+	}
 	external, err := f.externalSource()
 	if err != nil {
 		return nil, nil, err
@@ -112,7 +127,7 @@ func (f *Factory) resolveRequest(ctx context.Context) (*config.Config, *credenti
 
 	cfg := f.RuntimeConfig()
 	resolved := &credential.Credential{}
-	if name == "" && external.tag != "" {
+	if name == "" && (!f.BotAPI || f.Globals.BotID == "") && external.tag != "" {
 		resolved.Token, err = external.read()
 		resolved.Source = external.tag
 	} else {
@@ -135,6 +150,10 @@ func (f *Factory) resolveRequest(ctx context.Context) (*config.Config, *credenti
 		return cfg, nil, nil
 	}
 	cfg.Token, resolved.SpaceID = resolved.Token, cfg.SpaceID
+	if f.BotAPI && resolved.RobotID == "" {
+		resolved.RobotID = strings.TrimSpace(os.Getenv(config.EnvBotID))
+	}
+	resolved.BotKind = credential.TokenKind(resolved.Token)
 	return cfg, resolved, nil
 }
 
@@ -145,6 +164,20 @@ func (f *Factory) resolveProfile(ctx context.Context, cfg *config.Config, select
 	}
 	return store.View(ctx, func(index *authstore.Config) error {
 		name := selector
+		if f.BotAPI && f.Globals.BotID != "" && name == "" {
+			for candidate, profile := range index.Profiles {
+				if profile.BotID != f.Globals.BotID {
+					continue
+				}
+				if name != "" {
+					return output.ErrValidation("multiple profiles match --bot-id", "select a profile by name")
+				}
+				name = candidate
+			}
+			if name == "" {
+				return output.ErrAuth("Bot profile not found", "select an existing profile or import a Bot token")
+			}
+		}
 		if name == "" {
 			name = index.CurrentProfile
 			if name == "" {
@@ -155,7 +188,31 @@ func (f *Factory) resolveProfile(ctx context.Context, cfg *config.Config, select
 		if !ok {
 			return output.ErrAuth("profile not found", "select an existing profile or import a token")
 		}
-		p, err := ApplyProfileScope(cfg, &profile)
+		var p authstore.Profile
+		if profile.BotID != "" {
+			if !f.BotAPI {
+				return output.ErrAuth("this profile is bound to the Bot API", "select a native Token profile")
+			}
+			if f.Globals.BotID != "" && f.Globals.BotID != profile.BotID {
+				return output.ErrAuth("profile does not match the selected Bot", "")
+			}
+			p, err = profile.Scope()
+			if err == nil {
+				cfg.APIBaseURL, cfg.APIBaseURLSource = p.APIBaseURL, "profile"
+				if f.Globals.Space == "" && p.SpaceID != "" {
+					cfg.SpaceID = p.SpaceID
+				}
+				resolved.RobotID = p.BotID
+				if !f.Globals.CredentialFileSet {
+					external = externalSource{}
+				}
+			}
+		} else {
+			if f.BotAPI && f.Globals.BotID != "" {
+				return output.ErrAuth("profile has no Bot ID binding", "")
+			}
+			p, err = ApplyProfileScope(cfg, &profile)
+		}
 		if err != nil {
 			return err
 		}
@@ -173,4 +230,22 @@ func (f *Factory) resolveProfile(ctx context.Context, cfg *config.Config, select
 		resolved.Token, err = store.ReadToken(ctx, &p)
 		return err
 	})
+}
+
+func (f *Factory) resolveTaskRequest() (*config.Config, *credential.Credential, error) {
+	if f.Globals.ProfileSet || f.Globals.Profile != "" || f.Globals.BotID != "" ||
+		os.Getenv(config.EnvProfile) != "" || os.Getenv(config.EnvBotID) != "" ||
+		f.Globals.CredentialFileSet || f.Globals.CredentialFile != "" || f.Globals.Space != "" {
+		return nil, nil, output.ErrValidation("task mode does not allow profile, bot, Space, or credential selectors", "supply the Loop workspace argument")
+	}
+	cfg := f.RuntimeConfig()
+	cfg.SpaceID = ""
+	cfg.Token = strings.TrimSpace(os.Getenv(config.EnvTaskToken))
+	if cfg.Token == "" {
+		return nil, nil, output.ErrAuth("task mode requires OCTO_TASK_TOKEN", "")
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, nil, output.ErrAuth("invalid task credential or API origin", "")
+	}
+	return cfg, &credential.Credential{Token: cfg.Token, Source: "env:" + config.EnvTaskToken, BotKind: "agent_task"}, nil
 }

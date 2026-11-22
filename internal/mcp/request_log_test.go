@@ -263,7 +263,7 @@ func TestAdmissionFrozenCredentialNoRegister(t *testing.T) {
 	s.factoryFn = func(tc TrustedContext) (*cmdutil.Factory, *bytes.Buffer, *bytes.Buffer) {
 		f, o, e := base(tc)
 		provider := f.CredentialFunc
-		f.CredentialFunc = func() (*credential.BotCredential, error) {
+		f.CredentialFunc = func() (*credential.Credential, error) {
 			c, e := provider()
 			reads++
 			if reads > 1 {

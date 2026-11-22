@@ -10,6 +10,7 @@ import (
 	"io"
 	"math/big"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,8 +36,15 @@ func runOperation(cobraCmd *cobra.Command, f *cmdutil.Factory, rt *operationRunt
 	pathArgs := args[:positionalQueryStart]
 	positionalQueryValues := args[positionalQueryStart:]
 
-	// Use the registered path for every bearer. Cobra has checked the argument count.
 	urlPath := d.Path
+	if d.BotAPI {
+		var err error
+		urlPath, err = applyIdentityRouting(f, d, MarketplacePath(d.Service, d.Path))
+		if err != nil {
+			_ = f.EmitError(err) //nolint:errcheck // best-effort emit before returning err
+			return err
+		}
+	}
 	// Path values come from the positional args, except for slots a
 	// spec-declared path flag filled in (the escape hatch for ids starting
 	// with "-").
@@ -64,12 +72,12 @@ func runOperation(cobraCmd *cobra.Command, f *cmdutil.Factory, rt *operationRunt
 	if verr != nil {
 		return emitAndReturn(f, verr)
 	}
-	// A Workspace path flag and its binding header share one selector. Resolve
-	// both from the same value so Fleet can authorize before route dispatch.
-	headers = bindWorkspacePathHeader(rt, pathValues, headers)
-	if err := applyTaskAssigneeQuery(cobraCmd, f, rt, q, headers); err != nil {
-		_ = f.EmitError(err) //nolint:errcheck // best-effort emit before returning err
-		return err
+	if isBotLoopOperation(d) {
+		headers = bindWorkspacePathHeader(rt, pathValues, headers)
+		if err := applyTaskAssigneeQuery(cobraCmd, f, rt, q, headers); err != nil {
+			_ = f.EmitError(err) //nolint:errcheck // best-effort emit before returning err
+			return err
+		}
 	}
 
 	// Body: start from --data (if any), then merge explicit flags on top.
@@ -140,8 +148,13 @@ func buildQueryAndHeaders(cobraCmd *cobra.Command, rt *operationRuntime, positio
 	if err := validateSheetReadSelection(rt, q); err != nil {
 		return nil, nil, err
 	}
-	if err := applyLoopProjectQuery(cobraCmd, rt, q); err != nil {
-		return nil, nil, err
+	if isBotLoopOperation(rt.detail) {
+		if err := applyLoopProjectQuery(cobraCmd, rt, q); err != nil {
+			return nil, nil, err
+		}
+		if err := normalizeWorkspaceMemberPagination(rt, q); err != nil {
+			return nil, nil, err
+		}
 	}
 	return q, headers, nil
 }
@@ -180,6 +193,16 @@ func attachJSONBody(f *cmdutil.Factory, cobraCmd *cobra.Command, rt *operationRu
 	body, err := resolveBody(f, cobraCmd, rt)
 	if err != nil {
 		return err
+	}
+	if rt.detail.ValidateElementsIndex {
+		if err := validateElementsIndex(body); err != nil {
+			return err
+		}
+	}
+	if rt.detail.ValidateMarketplaceRelations {
+		if err := validateMarketplaceRelations(body, rt.detail.ID == "plugin.review"); err != nil {
+			return err
+		}
 	}
 	req.Body = body
 	if body == nil || rt.detail.RequestBody == nil {
@@ -616,6 +639,14 @@ func resolveBody(f *cmdutil.Factory, cobraCmd *cobra.Command, rt *operationRunti
 	if err := applyBodyFlags(cobraCmd, rt, base); err != nil {
 		return nil, err
 	}
+	if isBotLoopOperation(rt.detail) {
+		if err := applyLoopProjectBody(cobraCmd, rt, base); err != nil {
+			return nil, err
+		}
+		if err := applyTaskAssigneeBody(cobraCmd, f, rt, base); err != nil {
+			return nil, err
+		}
+	}
 	if err := applyGeneratedIdempotencyKey(rt, base); err != nil {
 		return nil, err
 	}
@@ -823,7 +854,7 @@ func validateRequiredBodyFields(rt *operationRuntime, base map[string]any) error
 	}
 	v := bodySchemaValidator{
 		flagFor:                     topLevelBodyFlagNames(rt),
-		enforcePublicAPIConstraints: rt.detail.StrictRequestSchema,
+		enforcePublicAPIConstraints: rt.detail.StrictRequestSchema || isBotLoopOperation(rt.detail),
 	}
 	if exitErr := v.validate(rt.detail.RequestBody, base, "", ""); exitErr != nil {
 		return exitErr
@@ -1211,18 +1242,21 @@ func bodyPath(path string) string {
 // emitOnce runs one request and emits the envelope. Returns the same error
 // value so cobra sets a non-zero exit code.
 func emitOnce(ctx context.Context, f *cmdutil.Factory, rt *operationRuntime, req *client.Request) error {
-	cli, err := f.Client()
+	cli, err := f.ClientForCredential(ctx, req.Credential)
 	if err != nil {
 		_ = f.EmitError(err) //nolint:errcheck // best-effort emit before returning err
 		return err
 	}
 	body, err := cli.Do(ctx, req)
 	if err != nil {
-		err = annotateIdempotencyKey(rt, req, err)
+		err = annotateIdempotencyKey(rt, req, annotateSheetCleaningError(rt, req, err))
 		_ = f.EmitError(err) //nolint:errcheck // best-effort emit before returning err
 		return err
 	}
 	if f.Globals == nil || !f.Globals.DryRun {
+		if contractErr := validateSheetReadScope(body, rt, req); contractErr != nil {
+			return emitAndReturn(f, contractErr)
+		}
 		if contractErr := validateReadResponse(body, rt); contractErr != nil {
 			return emitAndReturn(f, contractErr)
 		}
@@ -1249,6 +1283,9 @@ func emitOnce(ctx context.Context, f *cmdutil.Factory, rt *operationRuntime, req
 			_ = f.EmitError(unwrapErr) //nolint:errcheck // best-effort emit before returning err
 			return unwrapErr
 		}
+	}
+	if isBotLoopOperation(rt.detail) {
+		return f.EmitSuccessWithMeta(body, output.EnvelopeMeta{UnwrapResource: true})
 	}
 	return f.EmitOperationSuccess(body, rt.detail)
 }
@@ -1497,7 +1534,7 @@ func runPaginated(ctx context.Context, f *cmdutil.Factory, rt *operationRuntime,
 		return err
 	}
 
-	cli, err := f.Client()
+	cli, err := f.ClientForCredential(ctx, firstReq.Credential)
 	if err != nil {
 		_ = f.EmitError(err) //nolint:errcheck // best-effort emit before returning err
 		return err
@@ -1883,4 +1920,84 @@ func rawValueAtPath(body []byte, path string) (raw json.RawMessage, found bool, 
 		current = next
 	}
 	return current, true, nil
+}
+
+func MarketplacePath(service, path string) string {
+	if service != "marketplace" || !strings.HasPrefix(path, "/market/") {
+		return path
+	}
+	prefix, ok := os.LookupEnv("OCTO_MARKETPLACE_API_PREFIX")
+	if !ok {
+		return path
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix != "" && !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	return strings.TrimSuffix(prefix, "/") + strings.TrimPrefix(path, "/market")
+}
+
+func bindWorkspacePathHeader(rt *operationRuntime, pathValues []string, headers map[string]string) map[string]string {
+	if !rt.pathFlagNames["workspace-id"] || findParam(rt.detail, "X-Workspace-ID", "header") == nil {
+		return headers
+	}
+	for i, name := range rt.pathParams {
+		if name == "workspace_id" {
+			if headers == nil {
+				headers = map[string]string{}
+			}
+			headers["X-Workspace-ID"] = pathValues[i]
+		}
+	}
+	return headers
+}
+
+func normalizeWorkspaceMemberPagination(rt *operationRuntime, q url.Values) *output.ExitError {
+	if rt.detail.ID != "workspace.member.list" {
+		return nil
+	}
+	pageSize, err := workspaceMemberPageSize(q)
+	if err != nil {
+		return err
+	}
+	if !q.Has("offset") {
+		return nil
+	}
+	if q.Has("page") {
+		return output.ErrValidation("--offset and --page cannot be combined", "use one page selector")
+	}
+	offset, parseErr := strconv.Atoi(q.Get("offset"))
+	if parseErr != nil || offset < 0 || offset%pageSize != 0 {
+		return output.ErrValidation("--offset must be a nonnegative multiple of the page size", "use --page for arbitrary Project pages")
+	}
+	// Pin the page size used for the offset calculation on the wire too.
+	if !q.Has("page_size") {
+		q.Set("page_size", strconv.Itoa(pageSize))
+	}
+	q.Set("page", strconv.Itoa(offset/pageSize+1))
+	q.Del("offset")
+	return nil
+}
+
+func workspaceMemberPageSize(q url.Values) (int, *output.ExitError) {
+	if q.Has("limit") && q.Has("page_size") {
+		return 0, output.ErrValidation("--limit and --page-size cannot be combined", "use one page-size selector")
+	}
+	pageSize := 50
+	if raw := q.Get("limit"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 200 {
+			return 0, output.ErrValidation("--limit must be between 1 and 200", "choose a valid Project member page size")
+		}
+		pageSize = value
+		q.Set("page_size", raw)
+		q.Del("limit")
+	} else if raw := q.Get("page_size"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 200 {
+			return 0, output.ErrValidation("--page-size must be between 1 and 200", "choose a valid Project member page size")
+		}
+		pageSize = value
+	}
+	return pageSize, nil
 }

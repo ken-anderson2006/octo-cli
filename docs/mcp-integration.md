@@ -201,7 +201,7 @@ the CLI.
 
 ## Local stdio clients
 
-To let a local client launch its own server process, use `mcp serve` as the
+To let a local client launch its own server process, use `mcp serve --framework` as the
 launch arguments. In this mode the process uses the standard CLI credential
 resolution, including `OCTO_TOKEN_FILE`, `OCTO_TOKEN`, or a saved profile.
 Close the process's stdin to end its MCP session.
@@ -210,7 +210,7 @@ Close the process's stdin to end its MCP session.
 ```toml
 [mcp_servers.octo_local]
 command = "/absolute/path/to/octo-cli"
-args = ["mcp", "serve"]
+args = ["mcp", "serve", "--framework"]
 
 [mcp_servers.octo_local.env]
 OCTO_TOKEN_FILE = "/absolute/path/to/octo.token"

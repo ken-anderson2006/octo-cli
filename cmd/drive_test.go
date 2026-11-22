@@ -71,12 +71,12 @@ func newDriveTestEnv(t *testing.T, token string, apiHandler, storeHandler http.H
 	t.Cleanup(env.api.Close)
 
 	tf := cmdutil.NewTestFactory()
-	cfg := &config.Config{APIBaseURL: env.api.URL, BotToken: token, Format: "json"}
-	cred := &credential.BotCredential{Token: token, Source: "test"}
+	cfg := &config.Config{APIBaseURL: env.api.URL, Token: token, Format: "json"}
+	cred := &credential.Credential{Token: token, Source: "test"}
 	tf.SetConfig(cfg)
 	tf.SetCredential(cred)
 	tf.SetClient(client.New(cfg, cred, client.Options{ErrOut: io.Discard}))
-	tf.RegistryFunc = registry.MustNew
+	tf.RegistryFunc = registry.MustNewBotAPI
 
 	env.tf = tf
 	env.root = NewRootCmd(tf.Factory)
@@ -107,7 +107,7 @@ func (e *driveTestEnv) data(t *testing.T) map[string]any {
 // registering.
 func TestDrive_CommandCount(t *testing.T) {
 	tf := cmdutil.NewTestFactory()
-	tf.RegistryFunc = registry.MustNew
+	tf.RegistryFunc = registry.MustNewBotAPI
 	root := NewRootCmd(tf.Factory)
 
 	drive := findDriveCmd(root, "drive")
@@ -971,7 +971,7 @@ func TestDriveUploadFile_AcceptsASymlinkToARegularFile(t *testing.T) {
 func TestDrive_GeneratedShareLeavesForMCP(t *testing.T) {
 	for _, generated := range []bool{false, true} {
 		tf := cmdutil.NewTestFactory()
-		tf.RegistryFunc = registry.MustNew
+		tf.RegistryFunc = registry.MustNewBotAPI
 		tf.GeneratedDriveShareLeaves = generated
 		root := NewRootCmd(tf.Factory)
 		share := findDriveCmd(findDriveCmd(root, "drive"), "share")

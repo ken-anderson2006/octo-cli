@@ -103,7 +103,7 @@ func NewHTTPHandlerWithAdmission(build RootBuilder, baseTrusted TrustedContext, 
 	if len(facades) > 0 {
 		facade = facades[0]
 	}
-	reg, err := registry.New()
+	reg, err := registry.NewBotAPI()
 	if err != nil {
 		return nil, err
 	}

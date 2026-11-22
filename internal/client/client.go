@@ -1080,6 +1080,7 @@ func (c *Client) attempt(ctx context.Context, req *Request, urlStr string, body 
 	}
 	if c.cred != nil && c.cred.Token != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.cred.Token)
+	}
 	if !transportReplay {
 		forbidTransportReplay(httpReq)
 	}
@@ -1111,7 +1112,9 @@ func (c *Client) attempt(ctx context.Context, req *Request, urlStr string, body 
 		if errors.As(err, &urlErr) && strings.HasPrefix(urlErr.Err.Error(), "failed to parse Location header ") {
 			// net/http received the redirect before failing to parse its
 			// Location. Return a terminal error to avoid replaying the request.
-			return nil, output.ErrNetwork("server returned an invalid redirect location", "")
+			ee := output.ErrNetwork("server returned an invalid redirect location", "")
+			ee.HTTPStatus = http.StatusFound
+			return nil, ee
 		}
 		if permission.IsRefusal(err) {
 			return nil, err
@@ -1119,7 +1122,7 @@ func (c *Client) attempt(ctx context.Context, req *Request, urlStr string, body 
 		// *url.Error.Error() embeds the whole request URL, so an x-octo-secret
 		// path parameter (invite / share token) would otherwise reach the default
 		// stderr error envelope — no --verbose needed to leak it.
-		msg := redactSecrets(err.Error(), req.SecretValues)
+		msg := maskOrSuppressValue(err.Error(), req.SecretValues)
 		if len(req.ResponseSecretFields) > 0 {
 			msg = "transport error"
 		}
@@ -1355,6 +1358,11 @@ func collectURLValues(node any, values *[]string) {
 			collectURLValues(child, values)
 		}
 	}
+}
+
+// WriteFileAtomic publishes a completed file using an atomic rename.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	return writeFileAtomic(path, data, perm)
 }
 
 // writeFileAtomic writes data to path atomically: it streams the bytes into a
@@ -1627,7 +1635,7 @@ func attemptMayHaveApplied(err error) bool {
 	if ee.NotProcessed {
 		return false
 	}
-	if ee.Type == "network" || ee.Code == "RESPONSE_BUDGET_EXCEEDED" || ee.Code == "RESPONSE_TOO_LARGE" {
+	if (ee.Type == "network" && ee.HTTPStatus == 0) || ee.Code == "RESPONSE_BUDGET_EXCEEDED" || ee.Code == "RESPONSE_TOO_LARGE" {
 		return true
 	}
 	status := ee.HTTPStatus

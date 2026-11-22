@@ -7,7 +7,7 @@ import (
 )
 
 func TestSchemaFingerprint_Deterministic(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	d1, _ := reg.GetOperation("message.send")
 	d2, _ := reg.GetOperation("message.send")
 	if got1, got2 := schemaFingerprint(d1), schemaFingerprint(d2); got1 != got2 {
@@ -15,7 +15,7 @@ func TestSchemaFingerprint_Deterministic(t *testing.T) {
 	}
 	// Independently re-loaded registry must agree — the value is spec-derived, so
 	// two processes reading the same embedded spec produce the same fingerprint.
-	reg2 := registry.MustNew()
+	reg2 := registry.MustNewBotAPI()
 	d3, _ := reg2.GetOperation("message.send")
 	if schemaFingerprint(d1) != schemaFingerprint(d3) {
 		t.Errorf("fingerprint differs across registry instances for the same spec")
@@ -23,7 +23,7 @@ func TestSchemaFingerprint_Deterministic(t *testing.T) {
 }
 
 func TestSchemaFingerprint_DiffersByOperation(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	send, _ := reg.GetOperation("message.send")
 	create, _ := reg.GetOperation("docs.create")
 	if schemaFingerprint(send) == schemaFingerprint(create) {
@@ -35,7 +35,7 @@ func TestSchemaFingerprint_DiffersByOperation(t *testing.T) {
 // copy of the schema changes the fingerprint. This is the property that lets
 // execute reject a stale caller.
 func TestSchemaFingerprint_TracksSchemaChange(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	base, _ := reg.GetOperation("message.send")
 	before := schemaFingerprint(base)
 
@@ -74,7 +74,7 @@ func TestConstraintEnforcement_ReflectsStrictFlag(t *testing.T) {
 // real strict-schema operation (Loop Public API) rather than a synthetic one,
 // so it stays honest to actual runtime behaviour.
 func TestConstraintEnforcement_RealStrictOperation(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	var strictOp *registry.OperationDetail
 	for _, op := range reg.EnabledOperations() {
 		d, ok := reg.GetOperation(op.ID)

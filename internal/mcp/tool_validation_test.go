@@ -26,7 +26,7 @@ func TestExecArgumentValidation(t *testing.T) {
 		{"too many arguments", `{"name":"exec","arguments":{"args":["version"` + strings.Repeat(`,""`, limit) + `]}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			call, reply := parseToolCall(&request{ID: json.RawMessage("1"), Params: json.RawMessage(tc.raw)})
+			call, reply := parseToolCall(&frameworkRequest{ID: json.RawMessage("1"), Params: json.RawMessage(tc.raw)})
 			if reply == nil || reply.Error == nil || reply.Error.Code != -32602 || call != nil {
 				t.Fatal("expected JSON-RPC invalid params before invoking exec")
 			}
@@ -34,14 +34,14 @@ func TestExecArgumentValidation(t *testing.T) {
 	}
 
 	const valid = `{"name":"exec","arguments":{"args":["example","record","list","--owner","Two words","--status",""]},"_meta":{"progressToken":1}}`
-	call, reply := parseToolCall(&request{Params: json.RawMessage(valid)})
+	call, reply := parseToolCall(&frameworkRequest{Params: json.RawMessage(valid)})
 	want := []string{"example", "record", "list", "--owner", "Two words", "--status", ""}
 	if reply != nil || call == nil || !slices.Equal(call.args, want) {
 		t.Fatalf("parsed call = %+v, want exec args %q", call, want)
 	}
 
 	const longValid = `{"name":"exec","arguments":{"args":["version"`
-	call, reply = parseToolCall(&request{Params: json.RawMessage(longValid + strings.Repeat(`,""`, limit-1) + `]}}`)})
+	call, reply = parseToolCall(&frameworkRequest{Params: json.RawMessage(longValid + strings.Repeat(`,""`, limit-1) + `]}}`)})
 	if reply != nil || call == nil || len(call.args) != limit {
 		t.Fatalf("parsed call = %+v at schema limit %d, reply = %+v", call, limit, reply)
 	}

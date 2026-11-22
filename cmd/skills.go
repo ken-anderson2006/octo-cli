@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Mininglamp-OSS/octo-cli/internal/cmdutil"
+	"github.com/Mininglamp-OSS/octo-cli/internal/config"
 	"github.com/Mininglamp-OSS/octo-cli/internal/output"
 	"github.com/Mininglamp-OSS/octo-cli/skills"
 )
@@ -52,7 +54,11 @@ Installation changes local files and rejects --dry-run; listing and showing rema
 				_ = f.EmitError(ee) //nolint:errcheck // best-effort emit before returning err
 				return ee
 			}
-			entries, err := skills.List(skills.FS)
+			var files fs.FS = skills.Framework()
+			if os.Getenv(config.EnvCLIAPIContract) == config.CLIAPIContractBot && cmd.Root().Annotations["frameworkMCP"] != "true" {
+				files = skills.FS
+			}
+			entries, err := skills.List(files)
 			if err != nil {
 				_ = f.EmitError(err) //nolint:errcheck // best-effort emit before returning err
 				return err

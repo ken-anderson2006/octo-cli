@@ -11,7 +11,7 @@ import (
 // operation whose backend deduplicates every resend, called with a key, may be
 // resent after an ambiguous failure; every other keyed operation is sent once.
 func TestReplayDeduplicatedRequiresAVerifiedContract(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	for _, c := range []struct {
 		id      string
 		headers map[string]string

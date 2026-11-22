@@ -24,7 +24,7 @@ func TestSkillsToolDefinition(t *testing.T) {
 	for _, version := range []string{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"} {
 		t.Run(version, func(t *testing.T) {
 			s := session{protocol: version}
-			reply := s.request(t.Context(), &request{Method: "tools/list"})
+			reply := s.request(t.Context(), &frameworkRequest{Method: "tools/list"})
 			wire, err := json.Marshal(reply.Result)
 			if err != nil {
 				t.Fatal(err)
@@ -93,7 +93,7 @@ func TestSkillsToolArguments(t *testing.T) {
 		{`{"name":"skills","_meta":null}`, false},
 	} {
 		t.Run(tc.params, func(t *testing.T) {
-			_, reply := parseToolCall(&request{ID: json.RawMessage("2"), Params: json.RawMessage(tc.params)})
+			_, reply := parseToolCall(&frameworkRequest{ID: json.RawMessage("2"), Params: json.RawMessage(tc.params)})
 			if tc.valid && reply != nil {
 				t.Fatalf("valid skills parameters rejected: %+v", reply.Error)
 			}
@@ -115,7 +115,7 @@ func TestSkillsToolLoadFailure(t *testing.T) {
 		active:    make(map[string]*activeCall),
 		completed: make(chan completedCall),
 	}
-	msg := &request{ID: json.RawMessage("1"), key: "n:1", Method: "tools/call", Params: json.RawMessage(`{"name":"skills"}`)}
+	msg := &frameworkRequest{ID: json.RawMessage("1"), key: "n:1", Method: "tools/call", Params: json.RawMessage(`{"name":"skills"}`)}
 	if reply := s.request(t.Context(), msg); reply != nil {
 		t.Fatalf("skills load failed at protocol dispatch: %+v", reply.Error)
 	}

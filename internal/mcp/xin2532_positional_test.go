@@ -70,7 +70,7 @@ func (b *xin2532Backend) take() []xin2532Request {
 
 func xin2532Detail(t *testing.T, id string) *registry.OperationDetail {
 	t.Helper()
-	d, ok := registry.MustNew().GetOperation(id)
+	d, ok := registry.MustNewBotAPI().GetOperation(id)
 	if !ok {
 		t.Fatalf("operation %s is not in the registry", id)
 	}
@@ -212,7 +212,7 @@ func xin2532SampleArgs(d *registry.OperationDetail) (args map[string]any, operan
 // lands on the operand slot the engine reads it from, and no positional query
 // is ever rendered as a flag.
 func TestXIN2532RegistryWideArgvMatchesEngine(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	f, _, _ := fakeBackendFactory("http://127.0.0.1:1", "bf_test")(TrustedContext{})
 	root := testRoot(f)
 	positionalOps, parsed, reserved := 0, 0, 0
@@ -233,6 +233,12 @@ func TestXIN2532RegistryWideArgvMatchesEngine(t *testing.T) {
 		}
 		words := commandWords(d)
 		leaf, rest, err := root.Find(words)
+		if reg.ServiceDisabled(info.Service) {
+			if err == nil && len(rest) == 0 && leaf != root {
+				t.Errorf("%s: disabled operation registered as %v", d.ID, words)
+			}
+			continue
+		}
 		if err != nil || len(rest) != 0 || leaf == root {
 			t.Errorf("%s: no engine command for %v", d.ID, words)
 			continue

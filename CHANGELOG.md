@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased — MCP secret download links
+All notable changes to `octo-cli` are documented in this file.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Bot API MCP facades
 
 - Add `get_secret_download_url` once in each facade (4/3/6 tools total), keeping
   existing meta-tool contracts. Resolve stored aliases/IDs under the actual
@@ -14,7 +21,6 @@
 - Ship direct-to-private-client-file instructions and the configuration,
   snapshot/expiry, bounded transfer and Redis persistence risk contract in
   `octo-shared/secret-download.md`.
-
 
 - **MCP HTTP context is operator-controlled** — requests containing
   `X-Space-Id`, `X-Octo-Channel-Id`, `X-Octo-Channel-Type` or
@@ -223,14 +229,6 @@
   operator's responsibility. Existing CLI commands, authentication, output, and
   exit codes are unchanged — the MCP server is a new front end over the same
   engine.
-
-
-All notable changes to `octo-cli` are documented in this file.
-
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
 
 ### Changed
 

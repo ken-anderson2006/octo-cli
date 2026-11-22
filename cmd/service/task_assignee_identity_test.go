@@ -102,3 +102,5 @@ func TestTaskAssignmentIDCollisionRefused(t *testing.T) {
 		t.Fatalf("case-varied UUID must not match a Project UID: %#v %v", actor, err)
 	}
 }
+
+const projectMemberTestID = "11111111-1111-4111-8111-111111111111"

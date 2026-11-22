@@ -65,8 +65,10 @@ func importTarget(cmd *cobra.Command, f *cmdutil.Factory, previous *authstore.Pr
 	if space == "" {
 		space = previous.SpaceID
 	}
-	if err := authstore.ValidateSpace(space); err != nil {
-		return authstore.Profile{}, err
+	if f.Globals.BotID == "" {
+		if err := authstore.ValidateSpace(space); err != nil {
+			return authstore.Profile{}, err
+		}
 	}
-	return authstore.Profile{APIBaseURL: origin, SpaceID: space}, nil
+	return authstore.Profile{APIBaseURL: origin, SpaceID: space, BotID: f.Globals.BotID}, nil
 }

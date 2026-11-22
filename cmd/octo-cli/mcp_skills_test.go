@@ -45,11 +45,11 @@ func readPublicSkills(t *testing.T, client *http.Client, url string) map[string]
 			foundShared = true
 		}
 		mainDoc := path.Join(skill.Name, "SKILL.md")
-		content, err := skills.FS.ReadFile(mainDoc)
+		content, err := fs.ReadFile(skills.Framework(), mainDoc)
 		if err != nil || string(content) != skill.Content {
 			t.Fatalf("public content differs from embedded %s (read error %v)", mainDoc, err)
 		}
-		docs, err := fs.Glob(skills.FS, skill.Name+"/*.md")
+		docs, err := fs.Glob(skills.Framework(), skill.Name+"/*.md")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +58,7 @@ func readPublicSkills(t *testing.T, client *http.Client, url string) map[string]
 			if doc == mainDoc {
 				continue
 			}
-			ref, err := skills.FS.ReadFile(doc)
+			ref, err := fs.ReadFile(skills.Framework(), doc)
 			if err != nil {
 				t.Fatal(err)
 			}

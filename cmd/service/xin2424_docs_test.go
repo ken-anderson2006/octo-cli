@@ -55,7 +55,7 @@ var xin2424DocsFixtures = []xin2424DocsFixture{
 }
 
 func TestXIN2424DocsOperationsMatchBackendContract(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	for _, fx := range xin2424DocsFixtures {
 		t.Run(fx.row, func(t *testing.T) {
 			d, ok := reg.GetOperation(fx.op)
@@ -118,7 +118,7 @@ func assertXIN2424Set(t *testing.T, label string, got, want []string) {
 
 func TestXIN2424DocsInviteAcceptWire(t *testing.T) {
 	var method, path string
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		method, path = r.Method, r.URL.Path
 		_, _ = w.Write([]byte(`{"docId":"d_1","role":"writer","principalSpaceId":"s1"}`))
 	})
@@ -133,7 +133,7 @@ func TestXIN2424DocsInviteAcceptWire(t *testing.T) {
 
 func TestXIN2424DocsFileExportFlagAndQuery(t *testing.T) {
 	var path, format string
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		path, format = r.URL.Path, r.URL.Query().Get("format")
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 		_, _ = w.Write([]byte("# title\n"))
@@ -150,7 +150,7 @@ func TestXIN2424DocsFileExportFlagAndQuery(t *testing.T) {
 func TestXIN2424DocsSceneImportSendsJSONEnvelope(t *testing.T) {
 	var body map[string]any
 	var contentType, mode string
-	root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+	root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 		contentType, mode = r.Header.Get("Content-Type"), r.URL.Query().Get("mode")
 		raw, _ := io.ReadAll(r.Body)
 		if err := json.Unmarshal(raw, &body); err != nil {
@@ -174,7 +174,7 @@ func TestXIN2424DocsSceneImportSendsJSONEnvelope(t *testing.T) {
 // the MCP get_skill describe intent shows the model, against the pinned
 // backends (review B2/B3).
 func TestXIN2432ModelFacingDescriptionsMatchBackend(t *testing.T) {
-	r := registry.MustNew()
+	r := registry.MustNewBotAPI()
 	desc := func(id string) string {
 		t.Helper()
 		op, ok := r.GetOperation(id)

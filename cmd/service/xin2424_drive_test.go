@@ -74,7 +74,7 @@ func xin2424DriveRows() []xin2424DriveRow {
 }
 
 func TestXIN2424DriveNewOperations(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	for _, row := range xin2424DriveRows() {
 		t.Run(row.row, func(t *testing.T) {
 			op, ok := reg.GetOperation(row.id)
@@ -151,7 +151,7 @@ func TestXIN2424DriveNewOperations(t *testing.T) {
 // octo-drive internal/modules/upload/service.go (maxPartsPerPresign=20,
 // maxPartCount=10000).
 func TestXIN2424DriveUploadPartLimits(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	presign, _ := reg.GetOperation("drive.upload.parts_presign")
 	parts := presign.RequestBody.Properties["part_numbers"]
 	if parts.Type != "array" || parts.MinItems != 1 || parts.MaxItems != 20 || parts.Items == nil ||
@@ -173,7 +173,7 @@ func TestXIN2424DriveUploadPartLimits(t *testing.T) {
 // TestXIN2424DriveExistingShareContracts pins the corrections made to the
 // already-declared share operations (rows 75, 81, 83).
 func TestXIN2424DriveExistingShareContracts(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 
 	create, ok := reg.GetOperation("drive.share.blob-create")
 	if !ok {
@@ -220,7 +220,7 @@ func TestXIN2424DriveExistingShareContracts(t *testing.T) {
 // spec: TestDrive_NoOrgCommands forbids drive.org.* and the bot roster is
 // already served by bot.space-members.
 func TestXIN2424DriveOrgMembersNotAdded(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	if _, ok := reg.GetOperation("drive.org.members"); ok {
 		t.Error("drive.org.members must not be registered")
 	}

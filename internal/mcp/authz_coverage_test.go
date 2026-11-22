@@ -45,7 +45,7 @@ func sessionBoundFieldsOf(reg *registry.Registry, op registry.OperationInfo) []s
 // operation, or an op left out of the force table, therefore fails CI here
 // instead of silently bypassing over-privilege protection.
 func TestAuthzCoverage_EveryEnabledSessionBoundOpIsClassified(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	for _, op := range reg.EnabledOperations() {
 		fields := sessionBoundFieldsOf(reg, op)
 		if len(fields) == 0 {
@@ -72,7 +72,7 @@ func TestAuthzCoverage_EveryEnabledSessionBoundOpIsClassified(t *testing.T) {
 // exception and must stay model-controlled. Deleting the search-family force
 // entries turns this red.
 func TestAuthzCoverage_ConfiguredForceReachesEverySessionBoundOp(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	tc := TrustedContext{SpaceID: "S-forced", ChannelID: "C-forced", ChannelType: "1", OnBehalfOf: "O-forced"}
 	forcedValue := map[string]string{
 		"space_id":     "S-forced",
@@ -117,7 +117,7 @@ func TestAuthzCoverage_SpaceIDIsClassified(t *testing.T) {
 			t.Errorf("%q must force space_id", opID)
 		}
 	}
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	// A drive op carrying space_id must be classified only via the documented
 	// drive-resource exclusion, never force-injected.
 	d, _ := reg.GetOperation("drive.folder.create")
@@ -133,7 +133,7 @@ func TestAuthzCoverage_SpaceIDIsClassified(t *testing.T) {
 // does not half-cover: every session-bound field it declares must be in its
 // force table (so a partially-covered op can't leak channel/OBO).
 func TestAuthzCoverage_ForcedOpsForceEveryDeclaredSessionField(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	for opID, table := range overridableParams {
 		d, ok := reg.GetOperation(opID)
 		if !ok {

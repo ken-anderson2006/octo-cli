@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -94,7 +93,7 @@ type Server struct {
 // NewServer builds a connection server. It fails if the embedded skill
 // navigation mapping is invalid (fail-fast).
 func NewServer(build RootBuilder) (*Server, error) {
-	reg, err := registry.New()
+	reg, err := registry.NewBotAPI()
 	if err != nil {
 		return nil, err
 	}
@@ -222,33 +221,41 @@ func (s *Server) resourceDegradeHint(skillName string) string {
 func (s *Server) makeFactory(tc TrustedContext) (*cmdutil.Factory, *bytes.Buffer, *bytes.Buffer) { //nolint:gocritic // factory callback signature is shared with test overrides
 	streams, _, outBuf, errBuf := cmdutil.NewTestIOStreams()
 	f := cmdutil.NewDefaultFactory()
+	f.BotAPI = true
 	f.IOStreams = streams
 	reg := s.reg
 	f.RegistryFunc = func() *registry.Registry { return reg }
 	// Operator-set routing/limit/safety globals; re-applied post-build by executeOperation.
 	f.Globals.BotID = s.baseGlobals.BotID
 	f.Globals.Profile = s.baseGlobals.Profile
+	f.Globals.ProfileSet = s.baseGlobals.ProfileSet
+	f.Globals.CredentialFile = s.baseGlobals.CredentialFile
+	f.Globals.CredentialFileSet = s.baseGlobals.CredentialFileSet
 	f.Globals.Timeout = s.baseGlobals.Timeout
 	f.Globals.NoRetry = s.baseGlobals.NoRetry
 	f.Globals.DryRun = s.baseGlobals.DryRun
 	f.Globals.Space = tc.SpaceID
-	if s.apiOrigin != "" {
-		f.ConfigFunc = func() (*config.Config, error) { return &config.Config{APIBaseURL: s.apiOrigin}, nil }
-	}
 	if s.httpMode {
-		tok := s.credentialToken
-		space := tc.SpaceID
-		f.CredentialFunc = func() (*credential.BotCredential, error) {
-			if strings.TrimSpace(tok) == "" {
-				return nil, output.ErrAuth(
-					"missing or malformed Authorization bearer on the MCP HTTP connection",
-					"send Authorization: Bearer <token>; the HTTP transport never inherits the server's own credential")
+		// Resolve the request origin and bearer without consulting local profiles.
+		f.ConfigFunc = func() (*config.Config, error) {
+			cred, err := f.Credential()
+			if err != nil {
+				return nil, err
 			}
-			return &credential.BotCredential{
-				Token:   tok,
-				SpaceID: space,
-				BotKind: credential.TokenKind(tok),
-				Source:  "mcp:connection",
+			cfg := f.RuntimeConfig()
+			if s.apiOrigin != "" {
+				cfg.APIBaseURL = s.apiOrigin
+			}
+			cfg.Token, cfg.SpaceID = cred.Token, tc.SpaceID
+			return cfg, nil
+		}
+		f.CredentialFunc = func() (*credential.Credential, error) {
+			token := s.credentialToken
+			if credential.ValidateBearer(token) != nil {
+				return nil, output.ErrAuth("missing or malformed Authorization bearer on the MCP HTTP connection", "")
+			}
+			return &credential.Credential{
+				Token: token, SpaceID: tc.SpaceID, BotKind: credential.TokenKind(token), Source: "mcp:connection",
 			}, nil
 		}
 	}

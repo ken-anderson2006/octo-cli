@@ -17,44 +17,36 @@ import (
 	"github.com/Mininglamp-OSS/octo-cli/internal/registry"
 )
 
-func newFrameworkMCPCmd(f *cmdutil.Factory) *cobra.Command {
-	group := &cobra.Command{
-		Use:         "mcp",
-		Short:       "Manage the Octo CLI MCP server",
-		Args:        cobra.NoArgs,
-		Annotations: map[string]string{"skipValidation": "true"},
-		RunE:        func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+type frameworkMCPOptions struct {
+	stdio  bool
+	listen string
+	http   mcp.HTTPOptions
+}
+
+func (o *frameworkMCPOptions) bind(cmd *cobra.Command) {
+	cmd.Flags().BoolVar(&o.stdio, "framework", false, "serve the Server v2 and Fleet v2 exec and skills tools over stdio")
+	cmd.Flags().StringVar(&o.listen, "listen", "", "serve the framework tools at /mcp and public skills at /v1/skills on host:port")
+	cmd.Flags().DurationVar(&o.http.DrainDelay, "drain-delay", 0, "wait after readiness fails before closing the HTTP listener")
+	cmd.Flags().DurationVar(&o.http.ShutdownTimeout, "shutdown-timeout", mcp.DefaultHTTPShutdownTimeout, "maximum time to drain accepted HTTP requests")
+}
+
+func (o *frameworkMCPOptions) serve(cmd *cobra.Command, f *cmdutil.Factory) error {
+	listen := cmd.Flags().Changed("listen")
+	if o.stdio && listen {
+		return output.ErrValidation("--framework and --listen select different transports", "")
 	}
-	var listen string
-	var httpOptions mcp.HTTPOptions
-	serve := &cobra.Command{
-		Use:   "serve",
-		Short: "Serve Octo CLI MCP tools over stdio or Streamable HTTP",
-		Args:  cobra.NoArgs,
-		Annotations: map[string]string{
-			"skipValidation":      "true",
-			"skipOutputPreflight": "true",
-		},
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			defaults, reg := *f.Globals, f.Registry()
-			execute := func(ctx context.Context, bearer string, args []string) mcp.ExecResult {
-				return runMCPCommand(ctx, &defaults, reg, bearer, args)
-			}
-			if cmd.Flags().Changed("listen") {
-				return serveMCPHTTP(cmd.Context(), f, listen, httpOptions, execute)
-			}
-			if cmd.Flags().Changed("drain-delay") || cmd.Flags().Changed("shutdown-timeout") {
-				return output.ErrValidation("HTTP drain options require --listen", "set an HTTP listener address")
-			}
-			return mcp.Serve(cmd.Context(), f.IOStreams.In, f.IOStreams.Out, Version,
-				func(ctx context.Context, args []string) mcp.ExecResult { return execute(ctx, "", args) })
-		},
+	if !listen && (cmd.Flags().Changed("drain-delay") || cmd.Flags().Changed("shutdown-timeout")) {
+		return output.ErrValidation("HTTP drain options require --listen", "set an HTTP listener address")
 	}
-	serve.Flags().StringVar(&listen, "listen", "", "serve MCP at /mcp and public skills at /v1/skills on host:port (for example 127.0.0.1:8765)")
-	serve.Flags().DurationVar(&httpOptions.DrainDelay, "drain-delay", 0, "wait after readiness fails before closing the HTTP listener")
-	serve.Flags().DurationVar(&httpOptions.ShutdownTimeout, "shutdown-timeout", mcp.DefaultHTTPShutdownTimeout, "maximum time to drain accepted HTTP requests")
-	group.AddCommand(serve)
-	return group
+	defaults, reg := *f.Globals, registry.MustNew()
+	execute := func(ctx context.Context, bearer string, args []string) mcp.ExecResult {
+		return runMCPCommand(ctx, &defaults, reg, bearer, args)
+	}
+	if listen {
+		return serveMCPHTTP(cmd.Context(), f, o.listen, o.http, execute)
+	}
+	return mcp.Serve(cmd.Context(), f.IOStreams.In, f.IOStreams.Out, Version,
+		func(ctx context.Context, args []string) mcp.ExecResult { return execute(ctx, "", args) })
 }
 
 func serveMCPHTTP(ctx context.Context, f *cmdutil.Factory, address string, options mcp.HTTPOptions, execute func(context.Context, string, []string) mcp.ExecResult) error {

@@ -34,11 +34,17 @@ func RegisterServiceCommands(parent *cobra.Command, f *cmdutil.Factory) {
 	for _, svc := range reg.EnabledServices() {
 		svcCmd := ensureServiceCmd(parent, svc)
 		for _, info := range reg.ListOperations(svc) {
-			detail, ok := reg.GetOperation(info.ID)
+			detail, ok := reg.GetServiceOperation(svc, info.ID)
 			if !ok {
 				continue
 			}
 			attachOperation(svcCmd, f, detail)
+		}
+		if svc == "loop" {
+			if task, ok := reg.GetOperation("task.update"); ok && isBotLoopOperation(task) {
+				attachTaskAssignAlias(svcCmd, f)
+				attachLoopProjectAliases(svcCmd)
+			}
 		}
 	}
 }
@@ -149,6 +155,9 @@ func buildOperationCmd(f *cmdutil.Factory, d *registry.OperationDetail, verb str
 	usage := verb
 	for _, p := range rt.pathParams {
 		label := strings.ReplaceAll(p, "_", "-")
+		if d.Service == "html" && p == "doc_id" {
+			label = "doc-ref"
+		}
 		usage += " <" + label + ">"
 	}
 
@@ -185,6 +194,11 @@ func buildOperationCmd(f *cmdutil.Factory, d *registry.OperationDetail, verb str
 	registerHeaderFlags(cmd, rt, d)
 
 	registerBodyFlags(cmd, rt, d)
+	if isBotLoopOperation(d) {
+		registerLoopProjectFlags(cmd, d)
+		registerTaskAssigneeFlags(cmd, d)
+		registerLoopMemberIDLegacyFlags(cmd, d)
+	}
 
 	if d.Pagination != nil {
 		var pageAll bool
@@ -308,4 +322,8 @@ func extractPathParams(path string) []string {
 		out = append(out, path[start+1:end])
 		path = path[end+1:]
 	}
+}
+
+func isBotLoopOperation(d *registry.OperationDetail) bool {
+	return d.Service == "loop" && strings.HasPrefix(d.Path, "/fleet/api/v1/")
 }

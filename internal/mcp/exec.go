@@ -55,7 +55,7 @@ const maxInlineBinaryBytes = 4 << 20
 // (or --data/--file/…) through an undeclared multipart or spec parameter.
 var reservedFlagNames = map[string]bool{
 	"format": true, "jq": true, "dry-run": true, "verbose": true,
-	"timeout": true, "no-retry": true, "space": true, "bot-id": true, "profile": true,
+	"timeout": true, "no-retry": true, "space": true, "bot-id": true, "profile": true, "credential-file": true,
 	"data": true, "file": true, "page-all": true, "page-limit": true, "output": true, "o": true,
 	// cobra auto-registers help on every command; a spec param named help/h would
 	// otherwise print usage instead of executing.
@@ -77,8 +77,7 @@ var reservedFlagNames = map[string]bool{
 //     prints its request and performs no backend mutation, honoring the flag's
 //     documented "print request without executing" contract.
 //   - reset (must never be inherited into a per-call run): Format (pinned to
-//     json — the tool result must stay an envelope), Verbose, JQ, PageAll,
-//     PageMax (output/pagination knobs the model does not control).
+//     json — the tool result must stay an envelope), Verbose and JQ.
 func applyCallGlobals(g *cmdutil.GlobalOptions, base cmdutil.GlobalOptions, forcedSpace string) { //nolint:gocritic // copy operator globals so calls cannot mutate serve-time settings
 	// Propagate operator-set routing/limit/safety knobs.
 	g.BotID = base.BotID
@@ -92,8 +91,9 @@ func applyCallGlobals(g *cmdutil.GlobalOptions, base cmdutil.GlobalOptions, forc
 	g.Format = output.FormatJSON
 	g.Verbose = false
 	g.JQ = ""
-	g.PageAll = false
-	g.PageMax = 0
+	g.ProfileSet = base.ProfileSet
+	g.CredentialFile = base.CredentialFile
+	g.CredentialFileSet = base.CredentialFileSet
 }
 
 // executeOperation runs one operation through the generated cobra tree

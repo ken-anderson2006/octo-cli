@@ -32,12 +32,12 @@ func rootWithDriveToken(t *testing.T, token string, handler http.HandlerFunc) (*
 	t.Cleanup(srv.Close)
 
 	tf := cmdutil.NewTestFactory()
-	cfg := &config.Config{APIBaseURL: srv.URL, BotToken: token, Format: "json"}
+	cfg := &config.Config{APIBaseURL: srv.URL, Token: token, Format: "json"}
 	tf.SetConfig(cfg)
-	cred := &credential.BotCredential{Token: token, Source: "test"}
+	cred := &credential.Credential{Token: token, Source: "test"}
 	tf.SetCredential(cred)
 	tf.SetClient(client.New(cfg, cred, client.Options{ErrOut: io.Discard}))
-	tf.RegistryFunc = registry.MustNew
+	tf.RegistryFunc = registry.MustNewBotAPI
 
 	root := &cobra.Command{Use: "octo-cli", SilenceUsage: true, SilenceErrors: true}
 	RegisterServiceCommands(root, tf.Factory)
@@ -50,7 +50,7 @@ func rootWithDriveToken(t *testing.T, token string, handler http.HandlerFunc) (*
 // the octo-drive routes. Appendix B of the drive spec is the contract; this is
 // the test that fails if a spec edit silently moves an endpoint.
 func TestDrive_RegistryShape(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 
 	type want struct{ method, path string }
 	cases := map[string]want{
@@ -145,7 +145,7 @@ func TestDrive_RegistryShape(t *testing.T) {
 // The product's member picker is a frontend filter over the space roster, not a
 // backend search, so the CLI must not pretend to offer one.
 func TestDrive_NoOrgCommands(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	for _, op := range reg.ListOperations("drive") {
 		if got := op.ID; got == "drive.org.members" || got == "drive.org.search" {
 			t.Errorf("drive: org command %q must not be registered", got)
@@ -164,7 +164,7 @@ func TestDrive_NoOrgCommands(t *testing.T) {
 // table and the allowed-kind list must cover exactly the same token kinds, or a
 // credential could pass the gate and then find no mount.
 func TestDrive_SpecIdentityMetadata(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	op, ok := reg.GetOperation("drive.space.list")
 	if !ok {
 		t.Fatal("drive.space.list missing")
@@ -209,7 +209,7 @@ func TestDrive_SpecIdentityMetadata(t *testing.T) {
 // If another domain starts declaring them, that is a deliberate decision that
 // must update this test — it must not happen by copy-paste.
 func TestDrive_OnlyDriveDeclaresIdentityRouting(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	for _, svc := range reg.ListServices() {
 		ops := reg.ListOperations(svc)
 		if len(ops) == 0 {
@@ -280,12 +280,12 @@ func TestDrive_NoSpaceHeader(t *testing.T) {
 	live := httptest.NewServer(http.HandlerFunc(handler))
 	defer live.Close()
 
-	cfg := &config.Config{APIBaseURL: live.URL, BotToken: "bf_bot", Format: "json"}
-	cred := &credential.BotCredential{Token: "bf_bot", SpaceID: "octo-space-1", Source: "test"}
+	cfg := &config.Config{APIBaseURL: live.URL, Token: "bf_bot", Format: "json"}
+	cred := &credential.Credential{Token: "bf_bot", SpaceID: "octo-space-1", Source: "test"}
 	tf.SetConfig(cfg)
 	tf.SetCredential(cred)
 	tf.SetClient(client.New(cfg, cred, client.Options{ErrOut: io.Discard}))
-	tf.RegistryFunc = registry.MustNew
+	tf.RegistryFunc = registry.MustNewBotAPI
 
 	root := &cobra.Command{Use: "octo-cli", SilenceUsage: true, SilenceErrors: true}
 	RegisterServiceCommands(root, tf.Factory)
@@ -850,13 +850,13 @@ func TestDrive_SecretRedaction(t *testing.T) {
 func rootWithDriveDryRun(t *testing.T, token string) (*cobra.Command, *cmdutil.TestFactory) {
 	t.Helper()
 	tf := cmdutil.NewTestFactory()
-	cfg := &config.Config{APIBaseURL: "https://octo.test", BotToken: token, Format: "json"}
-	cred := &credential.BotCredential{Token: token, Source: "test"}
+	cfg := &config.Config{APIBaseURL: "https://octo.test", Token: token, Format: "json"}
+	cred := &credential.Credential{Token: token, Source: "test"}
 	tf.SetConfig(cfg)
 	tf.SetCredential(cred)
 	tf.Globals.DryRun = true
 	tf.SetClient(client.New(cfg, cred, client.Options{DryRun: true, ErrOut: io.Discard}))
-	tf.RegistryFunc = registry.MustNew
+	tf.RegistryFunc = registry.MustNewBotAPI
 
 	root := &cobra.Command{Use: "octo-cli", SilenceUsage: true, SilenceErrors: true}
 	RegisterServiceCommands(root, tf.Factory)

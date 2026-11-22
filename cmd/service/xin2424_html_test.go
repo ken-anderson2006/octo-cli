@@ -47,7 +47,7 @@ var xin2424HTMLRows = []xin2424HTMLRow{
 }
 
 func TestXIN2424HTMLOperationContracts(t *testing.T) {
-	r := registry.MustNew()
+	r := registry.MustNewBotAPI()
 	for _, row := range xin2424HTMLRows {
 		t.Run(row.row+"/"+row.opID, func(t *testing.T) {
 			op, ok := r.GetOperation(row.opID)
@@ -120,7 +120,7 @@ func TestXIN2424HTMLOperationContracts(t *testing.T) {
 }
 
 func TestXIN2424HTMLPathConstraints(t *testing.T) {
-	r := registry.MustNew()
+	r := registry.MustNewBotAPI()
 	revert, _ := r.GetOperation("html.version.revert")
 	for _, p := range revert.Parameters {
 		if p.Name == "version" && p.Type != "integer" {
@@ -176,7 +176,7 @@ func TestXIN2424HTMLRequestAssembly(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			hits := 0
-			root, tf, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+			root, tf, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 				hits++
 				if r.Method != tc.method || r.URL.Path != tc.path {
 					t.Errorf("request = %s %s, want %s %s", r.Method, r.URL.Path, tc.method, tc.path)

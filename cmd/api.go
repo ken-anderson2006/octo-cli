@@ -151,7 +151,7 @@ func matchOperation(reg *registry.Registry, method, path string) *registry.Opera
 	want := pathSegments(path)
 	for _, svc := range reg.ListServices() {
 		for _, info := range reg.ListOperations(svc) {
-			d, ok := reg.GetOperation(info.ID)
+			d, ok := reg.GetServiceOperation(svc, info.ID)
 			if !ok || !strings.EqualFold(d.Method, method) {
 				continue
 			}
@@ -184,7 +184,7 @@ func apiSecretsForPath(reg *registry.Registry, method, path string) []string {
 	var secrets []string
 	for _, svc := range reg.ListServices() {
 		for _, info := range reg.ListOperations(svc) {
-			d, ok := reg.GetOperation(info.ID)
+			d, ok := reg.GetServiceOperation(svc, info.ID)
 			if !ok || !strings.EqualFold(d.Method, method) {
 				continue
 			}
@@ -208,12 +208,16 @@ func apiSecretsForPath(reg *registry.Registry, method, path string) []string {
 // candidatePaths includes alternate mounts declared by the operation's spec.
 func candidatePaths(d *registry.OperationDetail) []string {
 	paths := []string{d.Path}
-	for _, from := range d.MountByTokenKind {
+	mounts := d.MountByTokenKind
+	if !d.BotAPI {
+		mounts = d.LegacyMountByTokenKind
+	}
+	for _, from := range mounts {
 		suffix, ok := strings.CutPrefix(d.Path, from)
 		if !ok {
 			continue
 		}
-		for _, to := range d.MountByTokenKind {
+		for _, to := range mounts {
 			if to == from {
 				continue
 			}

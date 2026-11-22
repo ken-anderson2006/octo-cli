@@ -1,10 +1,10 @@
 # OpenAPI specifications
 
-Place OpenAPI 3.x JSON files in this directory and rebuild to register service
-commands. Each filename selects the service name unless the spec declares
+The root holds the Bot API catalog used by the policy-checked MCP facades.
+The `v2/` directory holds the native command catalog used by the framework MCP transport. Each filename selects the service name unless the spec declares
 `x-octo-service`.
 
-`server.json` is derived from the [Octo Server v2 OpenAPI on the test branch](https://codex.mlamp.cn/dmwork/octo-server/-/blob/6ea222952bf1b8798f5e8c7bd10409af751fe8a9/docs/openapi/v2.yaml).
+`v2/server.json` is derived from the [Octo Server v2 OpenAPI on the test branch](https://codex.mlamp.cn/dmwork/octo-server/-/blob/6ea222952bf1b8798f5e8c7bd10409af751fe8a9/docs/openapi/v2.yaml).
 The CLI paths include the gateway's `/api` mount. The spec retains the
 upstream operation IDs, parameters and schemas. CLI metadata selects
 Token-derived Space, response envelopes, multipart uploads, and download
@@ -13,7 +13,7 @@ retries when a request outcome is uncertain. The spec marks storage
 credentials and signed URLs for diagnostic redaction.
 
 
-`loop.json` is derived from Fleet's `openapi/public-v2.json` on the
+`v2/loop.json` is derived from Fleet's `openapi/public-v2.json` on the
 `v2.5.0` tag at commit `7e63641e0a19c700557f64c6201021442b709502`.
 It preserves operation IDs, bodies, responses and action
 metadata. CLI adaptation expands `/v2` plus `/cli` into the gateway mount

@@ -97,7 +97,7 @@ func TestBuiltBinary_XIN2532TaskSearchPositionalQuery(t *testing.T) {
 	// The CLI on the same binary and configuration sends the same request.
 	for _, q := range values {
 		cmd := exec.Command(bin, "loop", "task", "search", "--workspace-id", "11111111-1111-4111-8111-111111111111", "--page", "2", "--page-size", "5", "--", q)
-		cmd.Env = append(isolatedEnv(t), "OCTO_API_BASE_URL="+backend.srv.URL)
+		cmd.Env = append(isolatedEnv(t), "OCTO_CLI_API_CONTRACT=bot", "OCTO_API_BASE_URL="+backend.srv.URL)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Errorf("cli q=%q: %v %s", q, err, out)
 		}

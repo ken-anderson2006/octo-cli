@@ -140,7 +140,7 @@ func TestExecute_MultipartRealExecutionStdioUploads(t *testing.T) {
 // (which sets Service==loop, not necessarily StrictRequestSchema) is reported as
 // locally enforcing the extended checks — the bug the reviewer flagged.
 func TestConstraintEnforcement_LoopOperationIsExtendedLocal(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	d, ok := reg.GetOperation("attachment.upload")
 	if !ok {
 		t.Skip("attachment.upload not embedded")
@@ -166,7 +166,7 @@ func TestConstraintEnforcement_LoopOperationIsExtendedLocal(t *testing.T) {
 // op that is neither Loop nor strict must report the extended set as
 // backend-only.
 func TestConstraintEnforcement_NonStrictNonLoopControl(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	// Find an enabled op that is neither loop nor strict.
 	var ctrl *registry.OperationDetail
 	for _, op := range reg.EnabledOperations() {
@@ -192,7 +192,7 @@ func TestConstraintEnforcement_NonStrictNonLoopControl(t *testing.T) {
 // (non-Loop) operation is also reported as extended-local, so the condition
 // covers both arms of Service==loop || StrictRequestSchema.
 func TestConstraintEnforcement_StrictNonLoopIsExtendedLocal(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	var strictOp *registry.OperationDetail
 	for _, op := range reg.EnabledOperations() {
 		d, ok := reg.GetOperation(op.ID)

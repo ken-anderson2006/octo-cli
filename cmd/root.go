@@ -4,10 +4,16 @@
 package cmd
 
 import (
+	"fmt"
+	"os"
+	"strings"
+
 	"github.com/spf13/cobra"
 
 	"github.com/Mininglamp-OSS/octo-cli/cmd/service"
 	"github.com/Mininglamp-OSS/octo-cli/internal/cmdutil"
+	"github.com/Mininglamp-OSS/octo-cli/internal/config"
+	"github.com/Mininglamp-OSS/octo-cli/internal/output"
 )
 
 type commandMode uint8
@@ -37,11 +43,14 @@ func newRootCmd(f *cmdutil.Factory, mode commandMode) *cobra.Command {
 		Short: "Octo CLI — an OpenAPI-driven command-line framework",
 		Long:  "octo-cli provides a generic HTTP client and generates service commands from embedded OpenAPI specs.",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateTaskModeCommand(cmd); err != nil {
+				return err
+			}
 			if mcpTool {
 				if err := validateMCPCommand(cmd, args, mode); err != nil {
 					return err
 				}
-			} else {
+			} else if !f.GeneratedDriveShareLeaves {
 				f.Globals.ProfileSet = cmd.Flags().Changed("profile")
 				f.Globals.CredentialFileSet = cmd.Flags().Changed("credential-file")
 			}
@@ -49,6 +58,18 @@ func newRootCmd(f *cmdutil.Factory, mode commandMode) *cobra.Command {
 				if err := f.PreflightOutput(f.Format()); err != nil {
 					return err
 				}
+			}
+			serviceCmd := cmd
+			for serviceCmd.Parent() != nil && serviceCmd.Parent() != cmd.Root() {
+				serviceCmd = serviceCmd.Parent()
+			}
+			if reg := f.Registry(); reg != nil && reg.IsBotAPIService(serviceCmd.Name()) ||
+				(mode == cliMode && os.Getenv(config.EnvCLIAPIContract) == config.CLIAPIContractBot) {
+				f.BotAPI = true
+			}
+			if cmd.Flags().Changed("bot-id") && !f.BotAPI && serviceCmd.Name() != "mcp" &&
+				!(serviceCmd.Name() == "auth" && cmd.Name() == "login") {
+				return output.ErrValidation("--bot-id applies only to Bot API commands", "")
 			}
 			if skipValidation(cmd) {
 				return nil
@@ -58,7 +79,6 @@ func newRootCmd(f *cmdutil.Factory, mode commandMode) *cobra.Command {
 		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Args:          cobra.NoArgs,
 	}
 
 	pf := root.PersistentFlags()
@@ -74,15 +94,22 @@ func newRootCmd(f *cmdutil.Factory, mode commandMode) *cobra.Command {
 		root.AddCommand(newAPICmd(f))
 	}
 	if mcpTool {
+		root.Annotations = map[string]string{"frameworkMCP": "true"}
 		root.CompletionOptions.DisableDefaultCmd = true
 	} else {
+		pf.StringVar(&f.Globals.BotID, "bot-id", "", "assert the Bot identity (env OCTO_BOT_ID)")
 		pf.StringVar(&f.Globals.Profile, "profile", "", "select a local profile (env OCTO_PROFILE)")
 		pf.StringVar(&f.Globals.CredentialFile, "credential-file", "", "read the Bearer from a file")
 		root.AddCommand(newAuthCmd(f), newUpgradeCmd(f), newMCPCmd(f))
 	}
 	service.RegisterServiceCommands(root, f)
-
-	bindTurnRelayRoot(root, f)
+	if !mcpTool {
+		registerDriveCmds(root, f)
+		registerDocsExcalidrawExportCmd(root, f)
+		registerDocsImportCmd(root, f)
+		registerDocsBoardCommentCmd(root, f)
+		bindTurnRelayRoot(root, f)
+	}
 	return root
 }
 
@@ -120,4 +147,20 @@ func skipOutputPreflight(cmd *cobra.Command, args []string) bool {
 		}
 	}
 	return false
+}
+
+func validateTaskModeCommand(cmd *cobra.Command) error {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv(config.EnvCredentialMode)), config.CredentialModeTask) {
+		return nil
+	}
+	root := cmd.Root()
+	for cmd.Parent() != nil && cmd.Parent() != root {
+		cmd = cmd.Parent()
+	}
+	switch cmd.Name() {
+	case root.Name(), "loop", "help", "version", "schema", "skills", "completion":
+		return nil
+	default:
+		return fmt.Errorf("%s=task only allows Loop commands", config.EnvCredentialMode)
+	}
 }

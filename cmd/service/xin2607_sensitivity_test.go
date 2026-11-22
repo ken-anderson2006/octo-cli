@@ -14,7 +14,7 @@ func TestXIN2607DocsReplayPolicy(t *testing.T) {
 }
 
 func TestXIN2607WriteOnlyCollection(t *testing.T) {
-	r := registry.MustNew()
+	r := registry.MustNewBotAPI()
 	for _, tc := range []struct{ op, field string }{{"drive.share.transfer", "password"}, {"autopilot.signing_secret.set", "signing_secret"}} {
 		d, ok := r.GetOperation(tc.op)
 		if !ok {

@@ -19,8 +19,8 @@ import (
 // added without deciding whether it is propagated into a call_op or reset, so
 // the propagation class cannot silently regain a blind spot.
 func TestCallGlobals_EveryFieldClassified(t *testing.T) {
-	propagated := map[string]bool{"BotID": true, "Profile": true, "Timeout": true, "NoRetry": true, "Space": true, "DryRun": true}
-	reset := map[string]bool{"Format": true, "Verbose": true, "JQ": true, "PageAll": true, "PageMax": true}
+	propagated := map[string]bool{"BotID": true, "Profile": true, "ProfileSet": true, "CredentialFile": true, "CredentialFileSet": true, "Timeout": true, "NoRetry": true, "Space": true, "DryRun": true}
+	reset := map[string]bool{"Format": true, "Verbose": true, "JQ": true}
 	tp := reflect.TypeOf(cmdutil.GlobalOptions{})
 	for i := 0; i < tp.NumField(); i++ {
 		name := tp.Field(i).Name
@@ -33,7 +33,7 @@ func TestCallGlobals_EveryFieldClassified(t *testing.T) {
 func TestApplyCallGlobals_PropagatesAndResets(t *testing.T) {
 	g := &cmdutil.GlobalOptions{
 		Format: "table", JQ: ".x", DryRun: true, Verbose: true,
-		PageAll: true, PageMax: 99, Space: "old", BotID: "old", Profile: "old", Timeout: "old", NoRetry: false,
+		Space: "old", BotID: "old", Profile: "old", Timeout: "old", NoRetry: false,
 	}
 	base := cmdutil.GlobalOptions{BotID: "b", Profile: "p", Timeout: "5s", NoRetry: true, DryRun: true}
 	applyCallGlobals(g, base, "forced-space")
@@ -47,7 +47,7 @@ func TestApplyCallGlobals_PropagatesAndResets(t *testing.T) {
 	if g.Space != "forced-space" {
 		t.Errorf("trusted space must win, got %q", g.Space)
 	}
-	if g.Format != output.FormatJSON || g.Verbose || g.JQ != "" || g.PageAll || g.PageMax != 0 {
+	if g.Format != output.FormatJSON || g.Verbose || g.JQ != "" {
 		t.Errorf("reset fields leaked into a call_op: %+v", g)
 	}
 

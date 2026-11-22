@@ -1,6 +1,10 @@
 package registry
 
 import (
+	"encoding/json"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -219,6 +223,172 @@ func TestHTMLOperationsUseDocsHTMLGatewayPrefix(t *testing.T) {
 		}
 		if want := "/docs-html/v1/"; !strings.HasPrefix(op.Path, want) {
 			t.Errorf("%s: path = %q, want prefix %q", op.ID, op.Path, want)
+		}
+	}
+}
+
+func operationIDs(ops []OperationInfo) []string {
+	out := make([]string, len(ops))
+	for i, o := range ops {
+		out[i] = o.ID
+	}
+	return out
+}
+
+func TestLoopWorkspaceManagementOperationsAreHidden(t *testing.T) {
+	r := MustNewBotAPI()
+	hidden := []string{"workspace.create", "workspace.update", "workspace.delete"}
+	for _, operationID := range hidden {
+		if _, ok := r.GetOperation(operationID); ok {
+			t.Fatalf("%s must not be exposed by the CLI registry", operationID)
+		}
+		for _, op := range r.ListOperations("loop") {
+			if op.ID == operationID {
+				t.Fatalf("%s must not be listed as a Loop operation", operationID)
+			}
+		}
+	}
+}
+
+func TestDriveMultipartUploadSchemaContracts(t *testing.T) {
+	r := MustNewBotAPI()
+
+	prepare, ok := r.GetOperation("drive.upload.prepare")
+	if !ok || prepare.ResponseSchema == nil {
+		t.Fatal("drive.upload.prepare response schema not found")
+	}
+	var capabilityHeader *ParamInfo
+	for i := range prepare.Parameters {
+		if prepare.Parameters[i].Name == "X-Drive-Upload-Capabilities" {
+			capabilityHeader = &prepare.Parameters[i]
+			break
+		}
+	}
+	if capabilityHeader == nil {
+		t.Fatal("drive.upload.prepare is missing the X-Drive-Upload-Capabilities header")
+	}
+	if capabilityHeader.In != "header" || capabilityHeader.Required || capabilityHeader.FlagName != "upload-capabilities" {
+		t.Errorf("drive.upload.prepare capability header = %+v, want optional header exposed as --upload-capabilities", *capabilityHeader)
+	}
+	for _, field := range []string{"upload_mode", "upload_url"} {
+		if _, ok := prepare.ResponseSchema.Properties[field]; !ok {
+			t.Errorf("drive.upload.prepare response is missing %s", field)
+		}
+		if slices.Contains(prepare.ResponseSchema.Required, field) {
+			t.Errorf("drive.upload.prepare response %s must remain optional", field)
+		}
+	}
+
+	presign, ok := r.GetOperation("drive.upload.parts_presign")
+	if !ok || presign.RequestBody == nil {
+		t.Fatal("drive.upload.parts_presign request schema not found")
+	}
+	if want := []string{"upload_id", "part_numbers"}; !reflect.DeepEqual(presign.RequestBody.Required, want) {
+		t.Errorf("drive.upload.parts_presign required = %v, want %v", presign.RequestBody.Required, want)
+	}
+	partNumbers, ok := presign.RequestBody.Properties["part_numbers"]
+	if !ok {
+		t.Fatal("drive.upload.parts_presign is missing part_numbers")
+	}
+	if partNumbers.Type != "array" || partNumbers.MinItems != 1 || partNumbers.MaxItems != 20 {
+		t.Errorf("drive.upload.parts_presign part_numbers = type %q, minItems %d, maxItems %d; want array, 1, 20",
+			partNumbers.Type, partNumbers.MinItems, partNumbers.MaxItems)
+	}
+
+	complete, ok := r.GetOperation("drive.upload.complete")
+	if !ok || complete.RequestBody == nil {
+		t.Fatal("drive.upload.complete request schema not found")
+	}
+	parts, ok := complete.RequestBody.Properties["parts"]
+	if !ok || parts.Items == nil {
+		t.Fatal("drive.upload.complete is missing parts items")
+	}
+	partNumber, ok := parts.Items.Properties["part_number"]
+	if !ok || partNumber.Minimum == nil || partNumber.Maximum == nil {
+		t.Fatal("drive.upload.complete part_number is missing numeric bounds")
+	}
+	if *partNumber.Minimum != 1 || *partNumber.Maximum != 10000 {
+		t.Errorf("drive.upload.complete part_number bounds = %v..%v, want 1..10000", *partNumber.Minimum, *partNumber.Maximum)
+	}
+	if want := []string{"file.id", "file.parent_id"}; !reflect.DeepEqual(complete.LosslessIDFields, want) {
+		t.Errorf("drive.upload.complete lossless id fields = %v, want %v", complete.LosslessIDFields, want)
+	}
+}
+
+func TestLoopExtendedBusinessContract(t *testing.T) {
+	r := MustNewBotAPI()
+	for _, id := range []string{
+		"workspace.list",
+		"label.create",
+		"comment.reaction.add",
+		"attachment.upload",
+		"loop.skill.list",
+		"runtime.update_request.get",
+		"autopilot.delivery.replay",
+		"expert_team.evaluate",
+	} {
+		op, ok := r.GetOperation(id)
+		if !ok {
+			t.Errorf("%s: not found", id)
+			continue
+		}
+		if op.Service != "loop" || !strings.HasPrefix(op.Path, "/fleet/api/v1/") {
+			t.Errorf("%s: got service=%q path=%q", id, op.Service, op.Path)
+		}
+	}
+
+	evaluation, ok := r.GetOperation("expert_team.evaluate")
+	if !ok {
+		t.Fatal("expert_team.evaluate: not found")
+	}
+	if evaluation.Path != "/fleet/api/v1/tasks/{task_id}/expert_team_evaluations" {
+		t.Fatalf("expert_team.evaluate path = %q", evaluation.Path)
+	}
+	if evaluation.RequestBody == nil {
+		t.Fatal("expert_team.evaluate request body missing")
+	}
+	outcome, ok := evaluation.RequestBody.Properties["outcome"]
+	if !ok || !slices.Equal(outcome.Enum, []any{"action", "no_action", "failed"}) {
+		t.Fatalf("expert_team.evaluate outcome schema = %+v", outcome)
+	}
+	if _, ok := evaluation.RequestBody.Properties["reason"]; !ok {
+		t.Fatalf("expert_team.evaluate reason schema missing: %+v", evaluation.RequestBody.Properties)
+	}
+
+	op, ok := r.GetOperation("label.list")
+	if !ok {
+		t.Fatal("label.list: not found")
+	}
+	foundWorkspaceHeader := false
+	for _, parameter := range op.Parameters {
+		if parameter.Name == "X-Workspace-ID" && parameter.In == "header" && parameter.FlagName == "workspace-id" {
+			foundWorkspaceHeader = true
+		}
+	}
+	if !foundWorkspaceHeader {
+		t.Errorf("label.list parameters = %+v, want X-Workspace-ID workspace-id flag", op.Parameters)
+	}
+}
+
+func TestLoopRuntimeMutationOperationsAreHidden(t *testing.T) {
+	r := MustNewBotAPI()
+	hidden := []string{
+		"runtime.update",
+		"runtime.delete",
+		"runtime.archive_and_delete",
+		"runtime.update_request.create",
+		"runtime.model_request.create",
+		"runtime.local_skill_request.create",
+		"runtime.local_skill_import.create",
+	}
+	for _, operationID := range hidden {
+		if _, ok := r.GetOperation(operationID); ok {
+			t.Fatalf("%s must not be exposed by the CLI registry", operationID)
+		}
+		for _, op := range r.ListOperations("loop") {
+			if op.ID == operationID {
+				t.Fatalf("%s must not be listed as a Loop operation", operationID)
+			}
 		}
 	}
 }

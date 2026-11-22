@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -111,13 +112,22 @@ func TestPhaseOneBearerSources(t *testing.T) {
 	}))
 	defer server.Close()
 	t.Setenv(config.EnvAPIBaseURL, server.URL)
-	for _, tc := range []struct{ name, token, alias string }{
-		{"no credential", "", ""},
-		{"legacy environment", "", "app_old_env"},
-		{"unsafe bearer", "opaque\n", "app_old_env"},
+	for _, tc := range []struct {
+		name, token, alias string
+		unsetToken         bool
+	}{
+		{name: "no credential"},
+		{name: "legacy alias with empty Token", alias: "app_old_env"},
+		{name: "legacy alias with unset Token", alias: "app_old_env", unsetToken: true},
+		{name: "unsafe bearer", token: "opaque\n", alias: "app_old_env"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(config.EnvToken, tc.token)
+			if tc.unsetToken {
+				if err := os.Unsetenv(config.EnvToken); err != nil {
+					t.Fatal(err)
+				}
+			}
 			t.Setenv("OCTO_BOT_TOKEN", tc.alias)
 			before := calls.Load()
 			_, _, err := runPhaseOneCommand(t, "api", "GET", "/v1/records")

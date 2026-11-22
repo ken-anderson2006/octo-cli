@@ -18,18 +18,69 @@ var specsFS embed.FS
 // the CLI tolerates additive spec changes and unknown x-octo-* extensions
 // without code churn.
 type Registry struct {
-	specs map[string]map[string]any
+	specs       map[string]map[string]any
+	botServices map[string]bool
 }
 
 // New loads and parses every embedded spec. It is not called at init time — the
 // Factory invokes it lazily so tests can construct a Registry directly.
 func New() (*Registry, error) {
-	source, err := fs.Sub(specsFS, "specs")
+	source, err := fs.Sub(specsFS, "specs/v2")
 	if err != nil {
 		return nil, err
 	}
 	return Load(source)
 }
+
+// NewBotAPI loads the catalog used by the policy-checked MCP facades.
+func NewBotAPI() (*Registry, error) {
+	source, err := fs.Sub(specsFS, "specs")
+	if err != nil {
+		return nil, err
+	}
+	r, err := Load(source)
+	if err != nil {
+		return nil, err
+	}
+	r.botServices = make(map[string]bool, len(r.specs))
+	for name := range r.specs {
+		r.botServices[name] = true
+	}
+	return r, nil
+}
+
+// MustNewBotAPI loads the embedded Bot API catalog or panics on invalid specs.
+func MustNewBotAPI() *Registry {
+	r, err := NewBotAPI()
+	if err != nil {
+		panic(err)
+	}
+	return r
+}
+
+// NewCLI combines the native v2 command specs with the non-Loop Bot API specs.
+// The CLI keeps the v2 Loop contract. The MCP catalog pins the v1 Loop contract.
+func NewCLI() (*Registry, error) {
+	native, err := New()
+	if err != nil {
+		return nil, err
+	}
+	bot, err := NewBotAPI()
+	if err != nil {
+		return nil, err
+	}
+	native.botServices = make(map[string]bool, len(bot.specs)-1)
+	for name, spec := range bot.specs {
+		if _, exists := native.specs[name]; !exists {
+			native.specs[name] = spec
+			native.botServices[name] = true
+		}
+	}
+	return native, nil
+}
+
+// IsBotAPIService reports whether the service uses the Bot API contract.
+func (r *Registry) IsBotAPIService(name string) bool { return r.botServices[name] }
 
 // Load reads OpenAPI JSON specs from the root of source.
 func Load(source fs.FS) (*Registry, error) {
@@ -368,19 +419,27 @@ type OperationDetail struct {
 	RequestBodyRequired bool        `json:"request_body_required,omitempty"`
 	ResponseSchema      *SchemaInfo `json:"response_schema,omitempty"`
 	// StrictRequestSchema opts a service or individual operation into the extended JSON Schema request
-	// checks such as closed objects, lengths, patterns, and size constraints.
+	// checks (closed objects, lengths, patterns and size constraints) that Loop's
+	// Public API always uses. It lets another strongly typed API request the same
+	// local guarantees without changing historical domains.
 	StrictResponseSchema bool            `json:"strict_response_schema,omitempty"`
 	StrictRequestSchema  bool            `json:"strict_request_schema,omitempty"`
 	Pagination           *PaginationInfo `json:"pagination,omitempty"`
-	SpaceHeader          bool            `json:"space_header,omitempty"`
+	// BaseURLEnv is retained in schema output for compatibility with existing
+	// specs and tooling. Runtime routing is unified through OCTO_API_BASE_URL and
+	// intentionally does not select a different service URL from this metadata.
+	BaseURLEnv string `json:"base_url_env,omitempty"`
+	// Credential is the x-octo-credential boundary declared by the service.
+	// Empty means the active Bot credential; "mail" selects the mailbox token
+	// bound to the same Bot identity.
+	Credential  string `json:"credential,omitempty"`
+	SpaceHeader bool   `json:"space_header,omitempty"`
 	// SpaceHeaderSet records whether the spec declared x-octo-space-header at
 	// all. It lets the transport distinguish an explicit `false` (suppress the
 	// X-Space-Id header) from an omitted flag (keep the default behaviour of
 	// sending it when the credential carries a space).
 	SpaceHeaderSet bool `json:"space_header_set,omitempty"`
 	Multipart      bool `json:"multipart,omitempty"`
-	// DataEnvelope identifies success responses with data and optional pagination.
-	DataEnvelope bool `json:"data_envelope,omitempty"`
 	// RawBody marks an upload whose request body is the file bytes themselves
 	// (x-octo-raw-body), not multipart/form-data and not JSON. The bytes are
 	// read from --file and sent with RawBodyContentType, the single media type
@@ -394,20 +453,44 @@ type OperationDetail struct {
 	// BinaryBody is true only when the operation delivers a binary body inline
 	// on a 2xx success (declared via a 2xx response with a content body), so
 	// the CLI can write those bytes to disk with --output/-o. It is false for
-	// redirect-only binary operations, which return no body to write.
+	// redirect-style binary ops such as file.download, which return a 302 with
+	// no consumable body — offering -o there is a silent no-op footgun.
 	BinaryBody bool `json:"binary_body,omitempty"`
+	// ValidateElementsIndex captures the x-octo-validate-elements-index
+	// extension. When true, the CLI rejects a request whose body carries any
+	// `elements[]` entry missing a valid fractional-index `index` before it is
+	// sent — so index-less / garbage-index whiteboard elements (XIN-792) can no
+	// longer reach the backend and corrupt a board.
+	ValidateElementsIndex bool `json:"validate_elements_index,omitempty"`
+	// ValidateMarketplaceRelations captures x-octo-validate-marketplace-relations.
+	// When true the CLI rejects relation payloads that violate the marketplace
+	// matrix (connector pinned to a version, missing pin field type, duplicate
+	// target, invalid team wiring) before the request is sent.
+	ValidateMarketplaceRelations bool `json:"validate_marketplace_relations,omitempty"`
 	// RetryMode captures the optional x-octo-retry operation extension. Empty
 	// keeps the transport default; "never" disables automatic retries for the
 	// individual request. This is required for non-idempotent external side
-	// effects where a lost response must be reported as an
+	// effects such as sending mail, where a lost response must be reported as an
 	// unknown result rather than risking a duplicate action.
 	RetryMode string `json:"retry_mode,omitempty"`
-	// MountByTokenKind retains legacy mounts for matching raw API paths to
-	// redaction metadata.
-	MountByTokenKind map[string]string `json:"-"`
+	// AllowedTokenKinds captures x-octo-allowed-token-kinds (spec top level or
+	// per-operation override). When non-empty the CLI checks the active
+	// credential's kind against the list before sending, failing locally with
+	// TOKEN_KIND_NOT_ALLOWED (validation / exit 2) instead of relying on a
+	// backend 401. Empty means "no local gate" — the historical behaviour for
+	// every domain that does not declare it.
+	AllowedTokenKinds []string `json:"allowed_token_kinds,omitempty"`
+	// MountByTokenKind captures x-octo-mount-by-token-kind: a token-kind →
+	// server mount-prefix table. When non-empty, the operation's own path must
+	// begin with exactly one of the table's values (the mount the spec paths are
+	// written against); that prefix is swapped for the mount matching the active
+	// credential's kind. Empty leaves the spec path byte-identical.
+	MountByTokenKind map[string]string `json:"mount_by_token_kind,omitempty"`
 	// ResponseFieldAliases captures x-octo-response-fields: source key →
 	// target keys. The CLI renames (one target) or duplicates (several) the
-	// value in the response before emitting it. Paths use the same syntax as LosslessIDFields.
+	// value in the response before emitting it, so a backend DTO with a bare
+	// `id` can surface as the unambiguous `share_id` + `share_token` an Agent
+	// needs. Paths use the same syntax as LosslessIDFields.
 	ResponseFieldAliases map[string][]string `json:"response_field_aliases,omitempty"`
 	// LosslessIDFields captures x-octo-lossless-id-fields: response paths whose
 	// uint64 ids are emitted as decimal strings so values above 2^53 survive an
@@ -438,6 +521,11 @@ type OperationDetail struct {
 	// under ResponseUnwrap. Non-empty means the unwrapped value must be an
 	// object, so a null or scalar cannot be reported as success.
 	UnwrapRequiredFields []string `json:"unwrap_required_fields,omitempty"`
+
+	// DataEnvelope identifies native responses containing data and optional pagination.
+	DataEnvelope           bool              `json:"data_envelope,omitempty"`
+	BotAPI                 bool              `json:"-"`
+	LegacyMountByTokenKind map[string]string `json:"-"`
 }
 
 // ListOperations returns every operation for a service, sorted by operationId.
@@ -480,29 +568,50 @@ func (r *Registry) ListAllOperations() []OperationInfo {
 	return all
 }
 
-// GetOperation finds an operation by its operationId. Returns ok=false when
-// not found.
+// GetOperation finds an operation by ID. The Server v2 operation takes
+// precedence where the native and Bot API registries share an ID.
 func (r *Registry) GetOperation(operationID string) (*OperationDetail, bool) {
-	for service, doc := range r.specs {
-		var found *OperationDetail
-		walkOperations(doc, func(pathStr, method string, op map[string]any) {
-			if found != nil {
-				return
-			}
-			if truthy(op["x-octo-cli-hidden"]) {
-				return
-			}
-			id, _ := op["operationId"].(string)
-			if id != operationID {
-				return
-			}
-			found = buildDetail(service, doc, pathStr, method, op)
-		})
-		if found != nil {
-			return found, true
+	if op, ok := r.GetServiceOperation("server", operationID); ok {
+		return op, true
+	}
+	for service := range r.specs {
+		if service == "server" {
+			continue
+		}
+		if op, ok := r.GetServiceOperation(service, operationID); ok {
+			return op, true
 		}
 	}
 	return nil, false
+}
+
+// GetServiceOperation finds an operation in its declaring service.
+func (r *Registry) GetServiceOperation(service, operationID string) (*OperationDetail, bool) {
+	doc := r.specs[service]
+	var found *OperationDetail
+	walkOperations(doc, func(pathStr, method string, op map[string]any) {
+		if found != nil || truthy(op["x-octo-cli-hidden"]) {
+			return
+		}
+		if id, _ := op["operationId"].(string); id == operationID {
+			found = buildDetail(service, doc, pathStr, method, op)
+			found.BotAPI = r.IsBotAPIService(service)
+			if found.BotAPI {
+				// Keep the approved Bot API schema projection stable. Numeric
+				// query bounds belong to the native command contract.
+				for i := range found.Parameters {
+					found.Parameters[i].Minimum = nil
+					found.Parameters[i].Maximum = nil
+				}
+			} else {
+				found.BaseURLEnv = ""
+				found.AllowedTokenKinds = nil
+				found.LegacyMountByTokenKind = found.MountByTokenKind
+				found.MountByTokenKind = nil
+			}
+		}
+	})
+	return found, found != nil
 }
 
 // --- internals ---
@@ -563,7 +672,21 @@ func buildDetail(service string, doc map[string]any, pathStr, method string, op 
 	}
 	d.BinaryResponse = boolOf(op["x-octo-binary-response"])
 	d.RetryMode = stringOf(op["x-octo-retry"])
+	if service != "loop" || strings.HasPrefix(d.Path, "/fleet/api/v1/") {
+		d.BaseURLEnv = stringOf(doc["x-octo-base-url"])
+	}
 	d.MountByTokenKind = stringMapOf(doc["x-octo-mount-by-token-kind"])
+	d.AllowedTokenKinds = stringSliceOf(doc["x-octo-allowed-token-kinds"])
+	if kinds := stringSliceOf(op["x-octo-allowed-token-kinds"]); len(kinds) > 0 {
+		d.AllowedTokenKinds = kinds
+	}
+	d.Credential = stringOf(doc["x-octo-credential"])
+	if kind := stringOf(op["x-octo-credential"]); kind != "" {
+		d.Credential = kind
+	}
+	d.ValidateElementsIndex = boolOf(op["x-octo-validate-elements-index"])
+	d.ValidateMarketplaceRelations = boolOf(op["x-octo-validate-marketplace-relations"])
+
 	d.ResponseFieldAliases = stringSliceMapOf(op["x-octo-response-fields"])
 	d.LosslessIDFields = stringSliceOf(op["x-octo-lossless-id-fields"])
 	unwrap, operationUnwrapSet := op["x-octo-response-unwrap"]

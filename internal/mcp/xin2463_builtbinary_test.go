@@ -105,7 +105,7 @@ func (b *xin2463Backend) url() string { return b.srv.URL }
 func xin2463CLI(t *testing.T, bin, backendURL string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
-	cmd.Env = append(isolatedEnv(t), "OCTO_API_BASE_URL="+backendURL)
+	cmd.Env = append(isolatedEnv(t), "OCTO_CLI_API_CONTRACT=bot", "OCTO_API_BASE_URL="+backendURL)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Errorf("%v: want a failure: %s", args, out)

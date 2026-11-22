@@ -41,13 +41,14 @@ func newMCPCmd(f *cmdutil.Factory) *cobra.Command {
 func rejectMCPBareParent(cmd *cobra.Command, _ []string) error { return cmd.Help() }
 
 func newMCPServeCmd(f *cmdutil.Factory) *cobra.Command { //nolint:gocyclo // operator startup validation is ordered before any service resources or listener
+	var framework frameworkMCPOptions
 	var (
-		httpAddr         string
-		forceChannelID   string
-		forceChannelType string
-		forceOnBehalfOf  string
-		allowLocalUpload bool
-		facade           string
+		httpAddr                      string
+		forceChannelID                string
+		forceChannelType              string
+		forceOnBehalfOf               string
+		allowLocalUpload              bool
+		facade                        string
 		policyDebug                   bool
 		policyDebugFile               string
 		permissionConfig              string
@@ -132,8 +133,21 @@ no supported release is enabled. See docs/permission/cli-components.md.
 Worker stdio connects through mcp relay --ticket-fd using an inherited,
 turn-limited ticket supplied by the endpoint launcher.`,
 		Args:        cobra.NoArgs,
-		Annotations: map[string]string{"skipValidation": "true"},
+		Annotations: map[string]string{"skipValidation": "true", "skipOutputPreflight": "true"},
 		RunE: func(cmd *cobra.Command, _ []string) (runErr error) {
+			flags := cmd.Flags()
+			if framework.stdio || flags.Changed("listen") {
+				for _, name := range []string{"bot-id", "http", "facade", "force-channel-id", "force-channel-type", "force-on-behalf-of", "allow-local-upload", "policy-debug", "policy-debug-file", "permission-config", "permission-isolated-test-catalog"} {
+					if flags.Changed(name) {
+						return output.ErrValidation("framework transport cannot be combined with Bot API facade options", "")
+					}
+				}
+				return framework.serve(cmd, f)
+			}
+			if flags.Changed("drain-delay") || flags.Changed("shutdown-timeout") {
+				return output.ErrValidation("HTTP drain options require --listen", "")
+			}
+			f.BotAPI = true
 			if forceOnBehalfOf != "" || os.Getenv("OCTO_FORCE_ON_BEHALF_OF") != "" {
 				return output.ErrValidation("OBO_FORBIDDEN", "")
 			}
@@ -174,11 +188,14 @@ turn-limited ticket supplied by the endpoint launcher.`,
 			// --dry-run are honored rather than silently dropped by the per-call
 			// factory. --dry-run makes every served call a rehearsal.
 			base := cmdutil.GlobalOptions{
-				BotID:   f.Globals.BotID,
-				Profile: f.Globals.Profile,
-				Timeout: f.Globals.Timeout,
-				NoRetry: f.Globals.NoRetry,
-				DryRun:  f.Globals.DryRun,
+				BotID:             f.Globals.BotID,
+				ProfileSet:        f.Globals.ProfileSet,
+				CredentialFile:    f.Globals.CredentialFile,
+				CredentialFileSet: f.Globals.CredentialFileSet,
+				Profile:           f.Globals.Profile,
+				Timeout:           f.Globals.Timeout,
+				NoRetry:           f.Globals.NoRetry,
+				DryRun:            f.Globals.DryRun,
 			}
 			build := NewRootCmd
 			admission, err := mcp.NewAdmission(os.Getenv("OCTO_MCP_REQUEST_LOG_DIR"), debug)
@@ -248,6 +265,7 @@ turn-limited ticket supplied by the endpoint launcher.`,
 	serve.Flags().StringVar(&policyDebugFile, "policy-debug-file", "", "absolute path to the private policy file; requires --policy-debug")
 	serve.Flags().StringVar(&permissionConfig, "permission-config", "", "private managed host configuration; opens only authenticated host control and turn relays")
 	serve.Flags().BoolVar(&permissionIsolatedTestCatalog, "permission-isolated-test-catalog", false, "isolated test only: enable the bounded explicit isolated-test catalog fixture for --permission-config")
+	framework.bind(serve)
 	return serve
 }
 
@@ -356,7 +374,7 @@ func bindTurnRelayRoot(root *cobra.Command, f *cmdutil.Factory) {
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		if handle != "" {
 			f.ConfigFunc = func() (*config.Config, error) { return &config.Config{}, nil }
-			f.CredentialFunc = func() (*credential.BotCredential, error) {
+			f.CredentialFunc = func() (*credential.Credential, error) {
 				return nil, output.ErrAuth("RELAY_CREDENTIALS_UNAVAILABLE", "")
 			}
 			if strings.EqualFold(strings.TrimSpace(os.Getenv(config.EnvCredentialMode)), config.CredentialModeTask) {

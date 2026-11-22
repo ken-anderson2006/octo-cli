@@ -185,7 +185,7 @@ schema 声明的数值范围。
 
 ## 本地 stdio 接入
 
-本机客户端也可用 `mcp serve` 启动自己的 MCP 进程。该模式按 CLI 规则解析
+本机客户端也可用 `mcp serve --framework` 启动自己的 MCP 进程。该模式按 CLI 规则解析
 `OCTO_TOKEN_FILE`、`OCTO_TOKEN` 或已保存的 Profile。关闭进程的 stdin 即可
 结束 MCP 会话。
 [Octo CLI 凭据与 Profile](../README.md#configuration-and-credentials)
@@ -193,7 +193,7 @@ schema 声明的数值范围。
 ```toml
 [mcp_servers.octo_local]
 command = "/absolute/path/to/octo-cli"
-args = ["mcp", "serve"]
+args = ["mcp", "serve", "--framework"]
 
 [mcp_servers.octo_local.env]
 OCTO_TOKEN_FILE = "/absolute/path/to/octo.token"

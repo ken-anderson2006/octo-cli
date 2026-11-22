@@ -295,9 +295,11 @@ func servePermissionHostWithPackages(ctx context.Context, cfg PermissionHostConf
 		s.httpMode = true
 		s.factoryFn = func(TrustedContext) (*cmdutil.Factory, *bytes.Buffer, *bytes.Buffer) {
 			f, out, errout := s.makeFactory(s.trusted)
-			f.ConfigFunc = func() (*config.Config, error) { return &config.Config{APIBaseURL: cfg.Origin}, nil }
-			f.CredentialFunc = func() (*credential.BotCredential, error) {
-				return &credential.BotCredential{Token: token, SpaceID: turn.source.SpaceID, BotKind: credential.TokenKind(token)}, nil
+			f.ConfigFunc = func() (*config.Config, error) {
+				return &config.Config{APIBaseURL: cfg.Origin, Token: token, SpaceID: turn.source.SpaceID}, nil
+			}
+			f.CredentialFunc = func() (*credential.Credential, error) {
+				return &credential.Credential{Token: token, SpaceID: turn.source.SpaceID, BotKind: credential.TokenKind(token)}, nil
 			}
 			return f, out, errout
 		}

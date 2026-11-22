@@ -91,7 +91,7 @@ func verifyMCPBot(ctx context.Context, f *cmdutil.Factory, requestPolicy bool, m
 	cc, bc := *cfg, *bot
 	cc.APIBaseURL = origin
 	f.ConfigFunc = func() (*config.Config, error) { c := cc; return &c, nil }
-	f.CredentialFunc = func() (*credential.BotCredential, error) { c := bc; return &c, nil }
+	f.CredentialFunc = func() (*credential.Credential, error) { c := bc; return &c, nil }
 	isManaged := len(managed) > 0
 	body := map[string]any{"bot_token": bc.Token}
 	if isManaged {

@@ -8,7 +8,7 @@ import (
 )
 
 func TestXIN2549TypedArrayReachability(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	arrays, intersections := 0, 0
 	for _, info := range reg.ListAllOperations() {
 		d, _ := reg.GetOperation(info.ID)

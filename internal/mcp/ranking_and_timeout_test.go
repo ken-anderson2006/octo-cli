@@ -14,7 +14,7 @@ import (
 // promptly and the ranking cost is bounded by maxRankQueryRunes regardless of
 // input size.
 func TestNearestOperations_BoundsRankingInput(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	huge := strings.Repeat("a", 5<<20) // 5 MiB, well past the 8 MiB body cap headroom
 	done := make(chan []string, 1)
 	go func() { done <- nearestOperations(reg, huge) }()
@@ -40,7 +40,7 @@ func TestNearestOperations_BoundsRankingInput(t *testing.T) {
 // TestUnknownOperationPayload_TruncatesEchoedID confirms the reflected id is
 // capped, so a multi-megabyte operation_id is not echoed whole into the error.
 func TestUnknownOperationPayload_TruncatesEchoedID(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	huge := strings.Repeat("x", 1<<20)
 	payload := unknownOperationPayload(reg, huge, "call search_ops to discover operation ids")
 	msg := payload["error"].(map[string]any)["message"].(string)

@@ -23,7 +23,7 @@ const (
 	maxActiveCalls  = 8
 )
 
-type request struct {
+type frameworkRequest struct {
 	ID     json.RawMessage
 	Method string
 	Params json.RawMessage
@@ -75,7 +75,7 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, version string, exe
 	go readFrames(ctx, in, frames)
 	encoder := json.NewEncoder(out)
 	s := session{
-		fsys:         skills.FS,
+		fsys:         skills.Framework(),
 		buildVersion: version,
 		execute:      execute,
 		active:       make(map[string]*activeCall),
@@ -140,7 +140,7 @@ func (s *session) handle(ctx context.Context, line string) *response {
 	return s.request(ctx, msg)
 }
 
-func parseRequest(frame []byte) (msg *request, reply *response) {
+func parseRequest(frame []byte) (msg *frameworkRequest, reply *response) {
 	if !utf8.Valid(frame) || !json.Valid(frame) {
 		return nil, failure(nil, -32700, "Parse error")
 	}
@@ -150,7 +150,7 @@ func parseRequest(frame []byte) (msg *request, reply *response) {
 		json.Unmarshal(fields["method"], &method) != nil || method == "" {
 		return nil, failure(nil, -32600, "Invalid request")
 	}
-	decoded := request{ID: fields["id"], Method: method, Params: fields["params"]}
+	decoded := frameworkRequest{ID: fields["id"], Method: method, Params: fields["params"]}
 	if decoded.ID == nil {
 		return &decoded, nil
 	}
@@ -221,7 +221,7 @@ func requestKey(id json.RawMessage) (string, bool) {
 	return "", false
 }
 
-func (s *session) request(ctx context.Context, msg *request) *response {
+func (s *session) request(ctx context.Context, msg *frameworkRequest) *response {
 	switch msg.Method {
 	case "initialize":
 		if s.protocol != "" {
@@ -246,7 +246,7 @@ func (s *session) request(ctx context.Context, msg *request) *response {
 	}
 }
 
-func initialize(msg *request, buildVersion string, allowLegacy bool) (version string, reply *response) {
+func initialize(msg *frameworkRequest, buildVersion string, allowLegacy bool) (version string, reply *response) {
 	var params struct {
 		ProtocolVersion string `json:"protocolVersion"`
 	}
@@ -275,7 +275,7 @@ func supportsProtocol(version string, allowLegacy bool) bool {
 	}
 }
 
-func (s *session) notify(msg *request) {
+func (s *session) notify(msg *frameworkRequest) {
 	if msg.Method != "notifications/cancelled" {
 		return
 	}

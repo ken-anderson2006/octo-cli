@@ -548,7 +548,7 @@ func TestBuildMultipartBody_FormTextFields(t *testing.T) {
 		t.Fatalf("parse flags: %v", err)
 	}
 
-	raw, ct, err := buildMultipartBody(cmd, rt)
+	raw, ct, err := buildMultipartBody(cmd, rt, nil)
 	if err != nil {
 		t.Fatalf("buildMultipartBody: %v", err)
 	}
@@ -601,7 +601,7 @@ func TestBuildMultipartBody_MissingFile(t *testing.T) {
 	empty := ""
 	rt := &operationRuntime{filePath: &empty}
 	cmd := &cobra.Command{Use: "synth"}
-	_, _, err := buildMultipartBody(cmd, rt)
+	_, _, err := buildMultipartBody(cmd, rt, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -651,24 +651,23 @@ func rootWithBotService(t *testing.T, handler http.HandlerFunc) (*cobra.Command,
 	tf := cmdutil.NewTestFactory()
 	cfg := &config.Config{
 		APIBaseURL: srv.URL,
-		BotToken:   "app_test",
+		Token:      "app_test",
 		Format:     "json",
 	}
 	tf.SetConfig(cfg)
-	cred := &credential.BotCredential{Token: "app_test", Source: "test"}
+	cred := &credential.Credential{Token: "app_test", Source: "test"}
 	tf.SetCredential(cred)
 	cli := client.New(cfg, cred, client.Options{ErrOut: io.Discard})
 	tf.SetClient(cli)
 	// Wire the registry explicitly to the one from the binary so the test
 	// exercises the real specs.
-	tf.RegistryFunc = registry.MustNew
+	tf.RegistryFunc = registry.MustNewBotAPI
 
 	root := &cobra.Command{Use: "octo-cli", SilenceUsage: true, SilenceErrors: true}
 	RegisterServiceCommands(root, tf.Factory)
 
 	return root, tf, srv
 }
-
 
 func TestLoopWorkspaceCreateIsNotRegistered(t *testing.T) {
 	root, _, _ := rootWithBotService(t, func(http.ResponseWriter, *http.Request) {
@@ -730,4 +729,54 @@ func TestHTMLCreateGeneratesRunScopedIdempotencyKey(t *testing.T) {
 	if json.Unmarshal(ee.Detail, &detail) != nil || detail["idempotency_key"] != sent {
 		t.Errorf("detail = %s, want idempotency_key %q", ee.Detail, sent)
 	}
+}
+
+func findCmd(parent *cobra.Command, name string) *cobra.Command {
+	for _, c := range parent.Commands() {
+		if c.Name() == name {
+			return c
+		}
+	}
+	return nil
+}
+
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+func childNames(parent *cobra.Command) []string {
+	var out []string
+	for _, c := range parent.Commands() {
+		out = append(out, c.Name())
+	}
+	return out
+}
+
+func rootWithBotServiceSpaced(t *testing.T, spaceID string, handler http.HandlerFunc) (*cobra.Command, *cmdutil.TestFactory, *httptest.Server) {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	tf := cmdutil.NewTestFactory()
+	cfg := &config.Config{
+		APIBaseURL: srv.URL,
+		Token:      "app_test",
+		Format:     "json",
+	}
+	tf.SetConfig(cfg)
+	cred := &credential.Credential{Token: "app_test", SpaceID: spaceID, Source: "test"}
+	tf.SetCredential(cred)
+	cli := client.New(cfg, cred, client.Options{ErrOut: io.Discard})
+	tf.SetClient(cli)
+	tf.RegistryFunc = registry.MustNewBotAPI
+
+	root := &cobra.Command{Use: "octo-cli", SilenceUsage: true, SilenceErrors: true}
+	RegisterServiceCommands(root, tf.Factory)
+
+	return root, tf, srv
 }

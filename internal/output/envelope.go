@@ -18,7 +18,8 @@ type EnvelopeMeta struct {
 	Notice    json.RawMessage
 	Identity  any
 	// DataEnvelope recognizes the service's data and optional pagination fields.
-	DataEnvelope bool
+	DataEnvelope   bool
+	UnwrapResource bool
 }
 
 // IdentityType is the actor type tag. The envelope's identity is always an
@@ -44,6 +45,11 @@ func WriteSuccess(w io.Writer, raw json.RawMessage, meta EnvelopeMeta) error {
 	}
 
 	dataField, paginationField := backendSuccessPayload(raw, meta.DataEnvelope)
+	if meta.UnwrapResource && len(paginationField) == 0 {
+		if resource, ok := splitResourceData(raw); ok {
+			dataField = resource
+		}
+	}
 	if len(dataField) == 0 {
 		env["data"] = nil
 	} else {
@@ -149,4 +155,19 @@ func writeJSON(w io.Writer, v any) error {
 	buf = append(buf, '\n')
 	_, werr := w.Write(buf)
 	return werr
+}
+
+func splitResourceData(raw json.RawMessage) (data json.RawMessage, ok bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil || len(obj) != 1 {
+		return nil, false
+	}
+	data, ok = obj["data"]
+	if !ok || !isJSONObject(data) {
+		return nil, false
+	}
+	return data, true
 }

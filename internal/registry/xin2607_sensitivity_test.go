@@ -20,7 +20,7 @@ func TestXIN2607SensitivityPaths(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sensitivity paths = %v, want %v", got, want)
 	}
-	r := MustNew()
+	r := MustNewBotAPI()
 	if len(r.specs) != 14 {
 		t.Fatalf("spec census changed: %d", len(r.specs))
 	}

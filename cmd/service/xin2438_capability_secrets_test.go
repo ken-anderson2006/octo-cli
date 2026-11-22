@@ -38,7 +38,7 @@ const capabilityInstallWithSecrets = `{"definition":{"schema_version":"1.0","nam
 	`"bindings":{"experts":[{"expert_name":"e1","runtime_id":"11111111-1111-4111-8111-111111111111"}]}}`
 
 func TestXIN2438CapabilityInstallSecretPaths(t *testing.T) {
-	op, ok := registry.MustNew().GetOperation("capability.install")
+	op, ok := registry.MustNewBotAPI().GetOperation("capability.install")
 	if !ok {
 		t.Fatal("capability.install not found")
 	}
@@ -55,13 +55,13 @@ func TestXIN2438CapabilityInstallSecretPaths(t *testing.T) {
 
 func TestXIN2438CapabilityInstallDryRunMasksNestedSecrets(t *testing.T) {
 	tf := cmdutil.NewTestFactory()
-	cfg := &config.Config{APIBaseURL: "https://octo.test", BotToken: "bf_bot", Format: "json"}
-	cred := &credential.BotCredential{Token: "bf_bot", Source: "test"}
+	cfg := &config.Config{APIBaseURL: "https://octo.test", Token: "bf_bot", Format: "json"}
+	cred := &credential.Credential{Token: "bf_bot", Source: "test"}
 	tf.SetConfig(cfg)
 	tf.SetCredential(cred)
 	tf.Globals.DryRun = true
 	tf.SetClient(client.New(cfg, cred, client.Options{DryRun: true, ErrOut: io.Discard}))
-	tf.RegistryFunc = registry.MustNew
+	tf.RegistryFunc = registry.MustNewBotAPI
 	root := &cobra.Command{Use: "octo-cli", SilenceUsage: true, SilenceErrors: true}
 	RegisterServiceCommands(root, tf.Factory)
 
@@ -96,12 +96,12 @@ func TestXIN2438CapabilityInstallVerboseMasksButSendsSecrets(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	tf := cmdutil.NewTestFactory()
-	cfg := &config.Config{APIBaseURL: srv.URL, BotToken: "bf_bot", Format: "json"}
-	cred := &credential.BotCredential{Token: "bf_bot", Source: "test"}
+	cfg := &config.Config{APIBaseURL: srv.URL, Token: "bf_bot", Format: "json"}
+	cred := &credential.Credential{Token: "bf_bot", Source: "test"}
 	tf.SetConfig(cfg)
 	tf.SetCredential(cred)
 	tf.SetClient(client.New(cfg, cred, client.Options{NoRetry: true, Verbose: true, ErrOut: tf.ErrOut}))
-	tf.RegistryFunc = registry.MustNew
+	tf.RegistryFunc = registry.MustNewBotAPI
 	root := &cobra.Command{Use: "octo-cli", SilenceUsage: true, SilenceErrors: true}
 	RegisterServiceCommands(root, tf.Factory)
 

@@ -92,7 +92,7 @@ func TestBuiltBinary_XIN2441BoundedValidationAndSecretAliases(t *testing.T) {
 					args = append(args, "--http", addr)
 				}
 				cmd := exec.CommandContext(ctx, bin, args...)
-				cmd.Env = append(isolatedEnv(t), "OCTO_API_BASE_URL="+backend.URL, "OCTO_MCP_HTTP_REQUEST_TIMEOUT=100ms")
+				cmd.Env = append(isolatedEnv(t), "OCTO_CLI_API_CONTRACT=bot", "OCTO_API_BASE_URL="+backend.URL, "OCTO_MCP_HTTP_REQUEST_TIMEOUT=100ms")
 				var line []byte
 				start := time.Now()
 				if mode == "stdio" {
@@ -152,7 +152,7 @@ func TestBuiltBinary_XIN2441BoundedValidationAndSecretAliases(t *testing.T) {
 		for _, flag := range []string{"--dry-run", "--verbose"} {
 			cmd := exec.Command(bin, "loop", "capability", "install", "--workspace-id", "22222222-2222-4222-8222-222222222222",
 				"--idempotency-key", "k1", "--data", string(data), flag)
-			cmd.Env = append(isolatedEnv(t), "OCTO_API_BASE_URL="+backend.URL)
+			cmd.Env = append(isolatedEnv(t), "OCTO_CLI_API_CONTRACT=bot", "OCTO_API_BASE_URL="+backend.URL)
 			out, _ := cmd.CombinedOutput()
 			if strings.Contains(string(out), xin2441Canary) {
 				t.Errorf("%s leaked a case-fold secret: %s", flag, out)

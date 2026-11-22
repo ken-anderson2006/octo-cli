@@ -95,7 +95,7 @@ type toolCall struct {
 	args []string
 }
 
-func parseToolCall(msg *request) (*toolCall, *response) {
+func parseToolCall(msg *frameworkRequest) (*toolCall, *response) {
 	params, ok := decodeObject(msg.Params, "name", "arguments", "_meta")
 	var name string
 	if !ok || json.Unmarshal(params["name"], &name) != nil || name == "" {
@@ -123,7 +123,7 @@ func parseToolCall(msg *request) (*toolCall, *response) {
 	}
 }
 
-func (s *session) startCall(ctx context.Context, msg *request) *response {
+func (s *session) startCall(ctx context.Context, msg *frameworkRequest) *response {
 	call, reply := parseToolCall(msg)
 	if reply != nil {
 		return reply
@@ -179,7 +179,7 @@ type textContent struct {
 	Text string `json:"text"`
 }
 
-type toolResult struct {
+type frameworkToolResult struct {
 	Content           []textContent   `json:"content"`
 	IsError           bool            `json:"isError"`
 	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
@@ -199,7 +199,7 @@ func (call *toolCall) run(ctx context.Context, id json.RawMessage, version strin
 	if call.name == skillsTool {
 		bundle, err := skills.LoadAll(fsys)
 		if err != nil {
-			return result(id, toolResult{
+			return result(id, frameworkToolResult{
 				Content: []textContent{{Type: "text", Text: "Failed to load skills"}},
 				IsError: true,
 			})
@@ -215,7 +215,7 @@ func toolResponse(id json.RawMessage, version string, value any, isError bool) *
 	if err != nil {
 		return failure(id, -32603, "Could not encode tool output")
 	}
-	output := toolResult{
+	output := frameworkToolResult{
 		Content: []textContent{{Type: "text", Text: string(text)}},
 		IsError: isError,
 	}

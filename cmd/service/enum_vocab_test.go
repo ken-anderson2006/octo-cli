@@ -497,7 +497,7 @@ func TestEnum_NoEnabledVocabularyIsNarrowerThanItsBackend(t *testing.T) {
 // site that can reach one.
 func discoverRequestSideEnums(t *testing.T) []vocabulary {
 	t.Helper()
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	var out []vocabulary
 
 	for _, svc := range reg.ListServices() {

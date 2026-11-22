@@ -83,7 +83,7 @@ func xin2424Equal(a, b []string) bool {
 }
 
 func TestXIN2424CoreRegistryRows(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	if len(xin2424CoreRows) != 27 {
 		t.Fatalf("fixture rows = %d, want 27", len(xin2424CoreRows))
 	}
@@ -129,7 +129,7 @@ func TestXIN2424CoreRegistryRows(t *testing.T) {
 }
 
 func TestXIN2424CoreBodyConstraints(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	batch, _ := reg.GetOperation("bot.users-batch")
 	if uids := batch.RequestBody.Properties["uids"]; uids.MinItems != 1 || uids.MaxItems != 200 || uids.Items == nil || uids.Items.MaxLength != 64 {
 		t.Errorf("users-batch uids bounds = %+v", uids)
@@ -209,7 +209,7 @@ func TestXIN2424CoreRequestAssembly(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var got hit
-			root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+			root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 				b, _ := io.ReadAll(r.Body)
 				got = hit{method: r.Method, path: r.URL.Path, query: r.URL.RawQuery, body: string(b)}
 				w.Header().Set("Content-Type", "application/json")
@@ -238,7 +238,7 @@ func TestXIN2424CoreRequestAssembly(t *testing.T) {
 // file.download. The CLI reaches each capability only through the canonical
 // route, and no separate alias command or operation exists.
 func TestXIN2432AliasRowsUseCanonicalRoute(t *testing.T) {
-	r := registry.MustNew()
+	r := registry.MustNewBotAPI()
 	for _, op := range r.ListAllOperations() {
 		switch op.Path {
 		case "/v1/bot/upload", "/v1/botfile/upload", "/v1/botfile/{path}":
@@ -260,7 +260,7 @@ func TestXIN2432AliasRowsUseCanonicalRoute(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var method, path string
-			root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+			root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 				method, path = r.Method, r.URL.Path
 				if r.Method == http.MethodGet {
 					w.Header().Set("Location", "https://storage.example/o")

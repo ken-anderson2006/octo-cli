@@ -52,7 +52,7 @@ var xin2424LoopRows = []xin2424LoopRow{
 }
 
 func TestXIN2424LoopOperationContracts(t *testing.T) {
-	r := registry.MustNew()
+	r := registry.MustNewBotAPI()
 	spec := r.GetSpec("loop")
 	paths := spec["paths"].(map[string]any)
 	for _, row := range xin2424LoopRows {
@@ -141,7 +141,7 @@ func xin2424EqualStrings(a, b []string) bool {
 }
 
 func TestXIN2424LoopEnumsAndFieldTypes(t *testing.T) {
-	r := registry.MustNew()
+	r := registry.MustNewBotAPI()
 	cases := []struct {
 		operationID, field string
 		enum               []any
@@ -188,7 +188,7 @@ func TestXIN2424LoopEnumsAndFieldTypes(t *testing.T) {
 // the embedded spec but x-octo-cli-hidden, by owner decision, so no registry
 // lookup, listing or generated command can reach them.
 func TestXIN2432LoopManagementOperationsStayHidden(t *testing.T) {
-	r := registry.MustNew()
+	r := registry.MustNewBotAPI()
 	hidden := map[string]bool{
 		"workspace.create": true, "workspace.update": true, "workspace.delete": true,
 		"runtime.update": true, "runtime.delete": true, "runtime.archive_and_delete": true,
@@ -233,7 +233,7 @@ func TestXIN2432LoopManagementOperationsStayHidden(t *testing.T) {
 // parameters would let a Bot claim an agent identity. No operation may declare
 // them; task credentials supply them out of band.
 func TestXIN2432AgentIdentityHeadersAreNeverCallerParameters(t *testing.T) {
-	r := registry.MustNew()
+	r := registry.MustNewBotAPI()
 	for _, info := range r.ListAllOperations() {
 		op, ok := r.GetOperation(info.ID)
 		if !ok {
@@ -256,7 +256,7 @@ func TestXIN2432AgentIdentityHeadersAreNeverCallerParameters(t *testing.T) {
 
 // The previous singular path was never registered by Fleet.
 func TestXIN2424LoopTeamEvaluationSingularPathRemoved(t *testing.T) {
-	paths := registry.MustNew().GetSpec("loop")["paths"].(map[string]any)
+	paths := registry.MustNewBotAPI().GetSpec("loop")["paths"].(map[string]any)
 	if _, exists := paths["/fleet/api/v1/tasks/{task_id}/expert_team_evaluation"]; exists {
 		t.Fatal("singular expert_team_evaluation path must not be declared")
 	}
@@ -314,7 +314,7 @@ func TestXIN2424LoopRequestAssembly(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var got xin2424Captured
-			root, _, _ := rootWithService(t, func(w http.ResponseWriter, r *http.Request) {
+			root, _, _ := rootWithBotService(t, func(w http.ResponseWriter, r *http.Request) {
 				raw, _ := io.ReadAll(r.Body)
 				mu.Lock()
 				got = xin2424Captured{method: r.Method, path: r.URL.Path, workspace: r.Header.Get("X-Workspace-ID"),
@@ -375,7 +375,7 @@ func TestXIN2424LoopRejectsInvalidBodiesLocally(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			root, _, _ := rootWithService(t, func(http.ResponseWriter, *http.Request) {
+			root, _, _ := rootWithBotService(t, func(http.ResponseWriter, *http.Request) {
 				t.Errorf("invalid request must not be sent")
 			})
 			root.SetArgs(tc.args)

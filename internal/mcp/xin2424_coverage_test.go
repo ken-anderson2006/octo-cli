@@ -133,7 +133,7 @@ func routeMatches(reportPath, opPath string) bool {
 
 func TestXIN2424CoverageManifestRowsResolve(t *testing.T) {
 	m := loadCoverageManifest(t)
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 
 	want := map[string]string{}
 	for gap, ids := range xin2424ApprovedRows {
@@ -253,7 +253,7 @@ func TestXIN2424CoverageManifestRowsResolve(t *testing.T) {
 // redundant operation).
 func TestXIN2432AliasAndEquivalentRowsReconcile(t *testing.T) {
 	m := loadCoverageManifest(t)
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	want := map[string]string{
 		"core#17": "file.upload", "core#31": "file.upload", "core#30": "file.download", "drive#102": "bot.space-members",
 	}
@@ -307,7 +307,7 @@ func TestXIN2424ExcludedRowsStayUnexposed(t *testing.T) {
 	if len(m.Excluded) != 151 {
 		t.Fatalf("excluded rows = %d, want 151 (52 implicit owner + 35 legacy + 64 removed)", len(m.Excluded))
 	}
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	var f exposureFile
 	if err := json.Unmarshal(exposureJSON, &f); err != nil {
 		t.Fatal(err)
@@ -340,7 +340,7 @@ func TestXIN2424ExcludedRowsStayUnexposed(t *testing.T) {
 // enabled registry operation must be allowed by baseline/approved or explicitly
 // withheld. CI fails on missing classifications and overlapping classes.
 func TestExposure_EveryEnabledOperationIsClassified(t *testing.T) {
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 	var f exposureFile
 	if err := json.Unmarshal(exposureJSON, &f); err != nil {
 		t.Fatalf("exposure.json: %v", err)
@@ -612,7 +612,7 @@ func TestXIN2424ExecuteDryRunAssemblesEveryApprovedOperation(t *testing.T) {
 	s := facadeServer(t, facadeTwo)
 	s.factoryFn = fakeBackendFactory(srv.URL, "bf_test")
 	s.uploadRoot = t.TempDir()
-	reg := registry.MustNew()
+	reg := registry.MustNewBotAPI()
 
 	ids := approvedOperations(t)
 	// 84 operations added by this work plus the three drive share leaves MCP
@@ -661,7 +661,7 @@ func TestXIN2424ExecuteDryRunAssemblesEveryApprovedOperation(t *testing.T) {
 				}
 				gotPath = u.EscapedPath()
 				auth, _ := data["headers"].(map[string]any)["Authorization"].(string)
-				if !strings.HasPrefix(auth, "Bearer bf_") || !strings.Contains(auth, "***") || strings.Contains(auth, "bf_test") {
+				if auth != "Bearer ***" {
 					t.Errorf("Authorization must carry the masked Bot bearer, got %q", auth)
 				}
 			}
